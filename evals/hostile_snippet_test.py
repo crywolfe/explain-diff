@@ -122,7 +122,7 @@ def quiz_uniform():
 MUTATIONS = [
     ("external script tag", patch("</body>", '<script src="https://cdn.example/x.js"></script></body>'), "S1-no-external-assets"),
     ("network call", patch(main_script, main_script + 'fetch("https://evil.example/x");'), "S2-no-network-apis"),
-    ("innerHTML sink", patch(main_script, main_script + "document.body.innerHTML='';"), "S3-no-html-sinks"),
+    ("innerHTML sink", patch(main_script, main_script + "document.body.innerHTML='<b>'+document.title;"), "S3-no-html-sinks"),
     ("raw less-than in quiz data", patch('"Why does backoff_delay', '"Why <b>does</b> backoff_delay'), "S5-data-blocks-escaped"),
     ("unresolved reference", patch('data-ref="s_loop"', 'data-ref="s_missing"'), "S6-refs-resolve"),
     ("pre rule without white-space", patch(".panel-code pre{margin:0;white-space:pre;", ".panel-code pre{margin:0;"), "S8-pre-whitespace"),

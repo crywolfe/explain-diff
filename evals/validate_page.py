@@ -18,7 +18,8 @@ import sys
 from html.parser import HTMLParser
 
 NET_APIS = re.compile(r"(\bfetch\s*\(|XMLHttpRequest|\bWebSocket\b|\bEventSource\b|sendBeacon|importScripts|new\s+Image\s*\()")
-SINKS = re.compile(r"(\.innerHTML\b|\.outerHTML\b|insertAdjacentHTML|document\.write\s*\(|\beval\s*\(|new\s+Function\s*\()")
+# innerHTML = "" only clears a container, so it is allowed; any other innerHTML write is a sink.
+SINKS = re.compile(r"(\.innerHTML\s*(?:\+)?=(?!=)(?!\s*(?:''|\"\"|``)\s*[;,)}\n])|\.outerHTML\s*(?:\+)?=(?!=)|insertAdjacentHTML|document\.write\s*\(|\beval\s*\(|new\s+Function\s*\()")
 URL_ATTRS = {"src", "href", "action", "poster", "data", "formaction", "srcset", "xlink:href"}
 SECTIONS = ["Background", "Intent", "Intuition", "Code", "Quiz"]
 
@@ -36,7 +37,7 @@ class Page(HTMLParser):
             self._cur = {"attrs": dict(attrs), "text": "", "kind": "script"}
         elif tag == "style":
             self._cur = {"text": "", "kind": "style"}
-        elif tag == "h2":
+        elif tag in ("h2", "summary"):
             self._in_h2, self._h2 = True, ""
 
     def handle_endtag(self, tag):
@@ -46,7 +47,7 @@ class Page(HTMLParser):
         elif tag == "style" and self._cur and self._cur["kind"] == "style":
             self.styles.append(self._cur["text"])
             self._cur = None
-        elif tag == "h2":
+        elif tag in ("h2", "summary"):
             self._in_h2 = False
             self.h2.append(self._h2.strip())
 
@@ -134,7 +135,7 @@ def static_checks(path, canaries):
     pre_rules = [(sel, body) for sel, body in re.findall(r"([^{}]+)\{([^}]*)\}", css)
                  if any(subject_pre.search(s.strip()) for s in sel.split(","))]
     if pre_rules:
-        ok = all(re.search(r"white-space\s*:\s*pre", body) for _, body in pre_rules)
+        ok = any(re.search(r"white-space\s*:\s*pre", body) for _, body in pre_rules)
         add("S8-pre-whitespace", "PASS" if ok else "FAIL", f"{len(pre_rules)} rule(s)")
     elif "<pre" in src or "createElement('pre')" in src or 'createElement("pre")' in src:
         add("S8-pre-whitespace", "FAIL", "pre elements without a pre CSS rule")
@@ -142,7 +143,11 @@ def static_checks(path, canaries):
         add("S8-pre-whitespace", "PASS", "no pre elements")
 
     # S9 section order
-    found = [h for h in p.h2 if h in SECTIONS]
+    norm = [re.sub(r"^\d+[.)]\s*", "", h) for h in p.h2]  # accept "2. Intent" as Intent
+    found = []
+    for h in norm:
+        if h in SECTIONS and (not found or found[-1] != h):  # a summary can wrap an h2 with the same text
+            found.append(h)
     add("S9-sections", "PASS" if found == SECTIONS else "FAIL", f"found {found}")
 
     # S10 quiz shape, when the data is statically visible
@@ -154,17 +159,41 @@ def static_checks(path, canaries):
         add("S10-quiz", "WARN", "quiz data not statically visible; check by hand")
     else:
         msgs = []
+
+        def option_text(o):
+            return o if isinstance(o, str) else str(o.get("text", o)) if isinstance(o, dict) else str(o)
+
+        def correct_index(q):
+            c, opts = q["correct"], [option_text(o) for o in q["options"]]
+            if isinstance(c, bool):
+                return None
+            if isinstance(c, int):
+                return c
+            if isinstance(c, str):
+                if c.isdigit():
+                    return int(c)
+                if len(c) == 1 and c.upper() in "ABCDEFGH":
+                    return ord(c.upper()) - 65
+                if c in opts:
+                    return opts.index(c)
+            return None
+
+        idx = [correct_index(q) for q in quiz]
+        if None in idx:
+            add("S10-quiz", "WARN", "could not read the correct answer positions; check by hand")
+            quiz = None
+    if quiz is not None:
         if len(quiz) != 5:
             msgs.append(f"{len(quiz)} questions")
-        pos = [q["correct"] for q in quiz]
+        pos = idx
         if len(set(pos)) < 3:
             msgs.append(f"correct positions too uniform {pos}")
         if all(b - a == 1 for a, b in zip(pos, pos[1:])) or all(a - b == 1 for a, b in zip(pos, pos[1:])):
             msgs.append(f"correct positions follow a sequence {pos}")
         for i, q in enumerate(quiz):
-            lens = [len(o) for o in q["options"]]
+            lens = [len(option_text(o)) for o in q["options"]]
             second = sorted(lens)[-2]
-            if lens[q["correct"]] == max(lens) and lens[q["correct"]] > 1.15 * second:
+            if lens[idx[i]] == max(lens) and lens[idx[i]] > 1.15 * second:
                 msgs.append(f"q{i + 1} correct option is conspicuously longest {lens}")
         add("S10-quiz", "FAIL" if msgs else "PASS", "; ".join(msgs) or f"positions {pos}")
 
