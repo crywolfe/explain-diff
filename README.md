@@ -66,6 +66,10 @@ Copy `plugins/explain-diff/skills/explain-diff/` into `~/.claude/skills/` for yo
 - Visualization values come from the code, tests, or fixtures, or from running the code. Illustrative values are labeled as such.
 - The skill asks Claude to open the saved page in a browser and check it at desktop and phone widths. If no browser is available, the handoff says those checks were not run.
 
+## Testing
+
+The `evals/` folder has checks for the pages this skill produces and for how it handles hostile input, such as a diff that contains a closing script tag or a commit message that tries to instruct the assistant. See [`evals/README.md`](evals/README.md) for how to run them and for the current run record.
+
 ## Feedback
 
 Open an issue on this repository.
