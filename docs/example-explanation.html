@@ -1,0 +1,313 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Retry with backoff in fetch_page</title>
+<style>
+:root{--nav-h:48px;--fg:#1f2328;--muted:#59636e;--line:#d1d9e0;--bg:#fff;--soft:#f6f8fa;--accent:#0969da;--accent-bg:#ddf4ff;--add:#1a7f37;--del:#cf222e;--warn-bg:#fff8c5}
+*{box-sizing:border-box}
+html{scroll-behavior:smooth}
+@media (prefers-reduced-motion:reduce){html{scroll-behavior:auto}*{transition:none!important;animation:none!important}}
+body{margin:0;font:16px/1.6 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;color:var(--fg);background:var(--bg)}
+code{font:0.88em ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;background:var(--soft);padding:1px 5px;border-radius:5px;overflow-wrap:anywhere}
+a{color:var(--accent)}
+button{font:inherit;color:inherit;cursor:pointer}
+:focus-visible{outline:3px solid #0969da;outline-offset:2px}
+header.top{padding:20px 24px 8px}
+header.top h1{margin:0 0 10px;font-size:1.9rem;line-height:1.25}
+.tldr{max-width:70ch;margin:0 0 8px}
+.assume{max-width:80ch;margin:0 0 12px;color:var(--muted);font-size:.9rem}
+.modes{display:inline-flex;gap:8px;margin:4px 0 12px}
+.modes button,.seg button,.ctl button,.btn{border:1px solid var(--line);background:#fff;border-radius:8px;padding:6px 14px}
+.modes button[aria-pressed="true"],.seg button[aria-pressed="true"]{background:var(--accent-bg);border-color:var(--accent);font-weight:700}
+nav.sticky{position:sticky;top:0;z-index:30;height:var(--nav-h);display:flex;align-items:center;gap:20px;padding:0 24px;background:#fff;border-bottom:1px solid var(--line)}
+.layout{display:grid;grid-template-columns:minmax(0,5fr) minmax(0,6fr);gap:28px;padding:0 24px 80px;align-items:start}
+.narr{min-width:0}
+section{padding-top:8px}
+h2{margin:28px 0 10px;font-size:1.45rem;scroll-margin-top:calc(var(--nav-h) + 12px)}
+h3{margin:22px 0 6px;font-size:1.1rem}
+.tag{display:inline-block;font-size:.72rem;font-weight:700;border:1px solid var(--line);border-radius:999px;padding:0 8px;margin-left:6px;color:var(--muted);vertical-align:middle}
+.intent dt{font-weight:700;margin-top:10px}
+.intent dd{margin:2px 0 0}
+body.brief .full-only{display:none}
+.bg-body{display:none}
+.bg-body.open{display:block}
+.callout{background:var(--warn-bg);border-left:4px solid #bf8700;padding:8px 12px;border-radius:6px;margin:12px 0}
+.ref{border:1px solid #b6d4fe;background:var(--accent-bg);color:#0550ae;border-radius:6px;padding:0 7px;font:0.84em ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;white-space:nowrap}
+.ref:hover{background:#b6e3ff}
+/* code panel */
+aside#panel{position:sticky;top:calc(var(--nav-h) + 12px);height:calc(100vh - var(--nav-h) - 24px);display:flex;flex-direction:column;background:#0d1117;color:#e6edf3;border-radius:10px;overflow:hidden;min-width:0}
+.panel-head{display:flex;align-items:center;gap:10px;padding:10px 14px;border-bottom:1px solid #30363d;font:13px ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;min-height:44px}
+.panel-file{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;direction:rtl;text-align:left}
+.panel-range{white-space:nowrap;color:#9da7b3}
+.panel-head button{border:1px solid #484f58;background:#161b22;color:#e6edf3;border-radius:6px;padding:2px 10px;font-size:12px}
+.panel-head button[hidden]{display:none}
+.panel-code{flex:1;min-height:0;overflow:auto;position:relative;padding:6px 0}
+.panel-empty,.panel-fail{display:flex;align-items:center;justify-content:center;text-align:center;height:100%;padding:24px;color:#9da7b3}
+.panel-fail{color:#ff7b72}
+.panel-code pre{margin:0;white-space:pre;font:14.5px/1.55 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;tab-size:4}
+.panel-code pre code{background:none;padding:0;border-radius:0;font:inherit;overflow-wrap:normal}
+.l{display:block;min-width:max-content;padding-right:18px;border-left:3px solid transparent}
+.l .g{display:inline-block;width:3.2ch;text-align:right;color:#7d8590;margin-right:1.1ch;user-select:none}
+.l .m{display:inline-block;width:2ch;text-align:center;user-select:none}
+.l.add{background:rgba(46,160,67,.2)}
+.l.add .m{color:#56d364;font-weight:700}
+.l.del{background:rgba(248,81,73,.2)}
+.l.del .m{color:#ff7b72;font-weight:700}
+.l.ctx{color:#b1bac4}
+.l.focus{border-left-color:#58a6ff}
+.l.focus.ctx{color:#e6edf3;background:rgba(88,166,255,.1)}
+.sheet-close{display:none}
+@media (max-width:899px){
+ .layout{display:block;padding:0 16px 80px}
+ header.top,nav.sticky{padding-left:16px;padding-right:16px}
+ aside#panel{position:fixed;left:0;right:0;bottom:0;top:auto;height:70vh;border-radius:14px 14px 0 0;z-index:60;transform:translateY(110%);visibility:hidden;transition:transform .2s}
+ aside#panel.open{transform:none;visibility:visible}
+ .sheet-close{display:inline-block}
+}
+/* visualizations */
+.viz{border:1px solid var(--line);border-radius:12px;padding:12px;margin:14px 0;background:#fff;min-width:0}
+.viz-head{display:flex;gap:8px;align-items:center;justify-content:space-between;margin-bottom:6px}
+.viz-head h3{margin:0;font-size:1rem}
+.viz .cap{color:var(--muted);font-size:.88rem;margin:4px 0 8px}
+.seg{display:flex;flex-wrap:wrap;gap:6px;margin:6px 0}
+.seg button{padding:4px 10px;font-size:.88rem}
+.ba{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin:8px 0}
+.ba div{border:1px solid var(--line);border-radius:8px;padding:6px 10px;font-size:.88rem;background:var(--soft)}
+.ba b{display:block;font-size:.76rem;text-transform:uppercase;letter-spacing:.04em;color:var(--muted)}
+.ba .after{border-color:#8ddb8c}
+.ba .before{border-color:#ffb3ae}
+svg.flow{width:100%;height:auto;display:block;max-height:420px}
+svg.flow .edge{fill:none;stroke:#8c959f;stroke-width:1.5}
+svg.flow .edge.on{stroke:#0969da;stroke-width:3.5}
+svg.flow .elabel{font-size:11px;fill:#59636e}
+svg.flow .node rect{fill:#fff;stroke:#8c959f;stroke-width:1.5}
+svg.flow .node text{font-size:12.5px;text-anchor:middle;dominant-baseline:central;fill:#1f2328}
+svg.flow .node.on rect{fill:#ddf4ff;stroke:#0969da;stroke-width:3.5}
+svg.flow .node.on text{font-weight:700}
+svg.flow .node[data-ref]{cursor:pointer}
+.ctl{display:flex;flex-wrap:wrap;gap:6px;margin:8px 0;align-items:center}
+.ctl .count{color:var(--muted);font-size:.88rem;margin-left:4px}
+.stepcap{min-height:3.2em;margin:6px 0;font-weight:600}
+table.state{border-collapse:collapse;font-size:.88rem;width:100%}
+table.state th,table.state td{border:1px solid var(--line);padding:3px 8px;text-align:left}
+table.state th{background:var(--soft);width:42%}
+.map{display:flex;flex-direction:column;gap:2px;align-items:stretch}
+.map button.node{border:1px solid var(--line);border-radius:8px;background:#fff;text-align:left;padding:8px 12px;display:flex;justify-content:space-between;gap:10px}
+.map button.node:hover{background:var(--accent-bg);border-color:var(--accent)}
+.map .arrow{text-align:center;color:var(--muted);line-height:1}
+.map .st{font-size:.76rem;font-weight:700;color:var(--muted)}
+.bars{display:flex;flex-direction:column;gap:4px;margin:8px 0}
+.bar{display:grid;grid-template-columns:5.5em 1fr 3.5em;gap:8px;align-items:center;font-size:.88rem}
+.bar i{display:block;height:14px;background:#0969da;border-radius:3px}
+dialog{width:min(920px,94vw);border:1px solid var(--line);border-radius:12px;padding:12px}
+dialog::backdrop{background:rgba(0,0,0,.45)}
+.fail{background:#ffebe9;border:1px solid #ff8182;border-radius:8px;padding:8px 12px;margin:8px 0}
+/* quiz */
+.q{border:1px solid var(--line);border-radius:12px;padding:12px 14px;margin:12px 0}
+.q p{margin:0 0 8px;font-weight:600}
+.opts{display:flex;flex-direction:column;gap:6px}
+.opt{text-align:left;border:1px solid var(--line);background:#fff;border-radius:8px;padding:8px 12px}
+.opt:hover:not(:disabled){background:var(--soft)}
+.opt.sel{border-width:2px}
+.opt.right{border-color:var(--add);background:#dafbe1}
+.opt.wrong{border-color:var(--del);background:#ffebe9}
+.opt:disabled{cursor:default;color:inherit}
+.fb{margin-top:8px;font-size:.93rem}
+.fb[hidden]{display:none}
+</style>
+</head>
+<body class="brief">
+
+<header class="top">
+<h1>Retry with backoff in fetch_page</h1>
+<p class="tldr"><b>TL;DR:</b> <code>fetch_page</code> now retries HTTP 429 and 503 up to four attempts with exponential backoff, and honors <code>Retry-After</code> up to an 8 second cap. Other failures still raise immediately, and <code>FetchError</code> now reports how many attempts were made. Tests pin the wait sequence by injecting a fake <code>sleep</code>.</p>
+<p class="assume">Assumption: the target is commit <code>39f902e</code> on branch <code>retry-backoff</code> compared with <code>main</code> (<code>ff3253d</code>). This is a small invented sample repository used for the demo. I ran its 6 tests and all passed.</p>
+<div class="modes" role="group" aria-label="Detail level"><button type="button" data-mode="brief" aria-pressed="true">Brief</button><button type="button" data-mode="full" aria-pressed="false">Full</button></div>
+</header>
+<nav class="sticky" aria-label="Sections"><a href="#background">Background</a><a href="#intent">Intent</a><a href="#intuition">Intuition</a><a href="#code">Code</a><a href="#quiz">Quiz</a></nav>
+<div class="layout">
+<main class="narr">
+<section><h2 id="background">Background</h2>
+<button type="button" class="btn" id="bg-toggle" aria-expanded="false" aria-controls="bg-body">Show background</button>
+<div id="bg-body" class="bg-body">
+<p><code>fetch_page(url, session)</code> sends one HTTP GET through a <code>session</code> object and returns the body on status 200. Before this change, any other status raised <code>FetchError</code> immediately.</p>
+<p>HTTP 429 means the server is rate limiting the caller. HTTP 503 means it is temporarily unavailable. Both usually clear within seconds. A server can send a <code>Retry-After</code> header to say how long to wait.</p>
+<div class="full-only"><p><b>Mental model.</b> A session is any object with <code>get(url)</code> that returns something with <code>status</code>, <code>body</code>, and <code>headers</code>. Tests use a small fake, so no network is involved.</p></div>
+</div></section>
+<section><h2 id="intent">Intent</h2>
+<dl class="intent">
+<dt>What <span class="tag">Stated: commit message</span></dt>
+<dd><code>fetch_page</code> retries HTTP 429 and 503 up to 4 attempts with waits of 0.5s, 1s, and 2s. It honors <code>Retry-After</code>. Other non-200 statuses still fail fast.</dd>
+<dt>Why <span class="tag">Stated: commit message</span></dt>
+<dd>Pages fail intermittently at peak load, and the whole job aborts on the first failure.</dd>
+<dt>Decisions</dt>
+<dd><code>Retry-After</code> is capped at 8 seconds so one slow server cannot stall a worker <span class="tag">Stated</span>. The wait goes through an injectable <code>sleep</code> argument, so tests run without real delays <span class="tag">Inferred: signature and tests</span>. <code>FetchError</code> records the attempt count <span class="tag">Stated</span>.</dd>
+<dt>Out of scope <span class="tag">Stated: commit message</span></dt>
+<dd>Jitter and an async client.</dd>
+</dl>
+</section>
+<section><h2 id="intuition">Intuition</h2>
+<p>The toy request is <code>https://example.com/report</code>. The server answers 503 twice, then 200. Pick another case to see the other paths: a long <code>Retry-After</code>, retries running out, and a status that is never retried.</p>
+
+<div class="viz"><div class="viz-head"><h3>What happens to one request</h3><button type="button" class="btn expand">Expand</button></div>
+<p class="cap">Values come from running both versions of the sample code. Step through a case; each step loads the matching code.</p>
+<div data-viz="stepper" data-spec="flow"></div></div></section>
+<section><h2 id="code">Code</h2>
+<div class="viz"><div class="viz-head"><h3>Change map</h3><button type="button" class="btn expand">Expand</button></div>
+<p class="cap">Changed pieces in dependency order. Select one to see its diff in the code panel.</p>
+<div class="map"><button type="button" class="node" data-ref="s_retryable"><span>RETRYABLE set</span><span class="st">added</span></button><div class="arrow" aria-hidden="true">&darr;</div><button type="button" class="node" data-ref="s_error"><span>FetchError.attempts</span><span class="st">changed</span></button><div class="arrow" aria-hidden="true">&darr;</div><button type="button" class="node" data-ref="s_delay"><span>backoff_delay</span><span class="st">added</span></button><div class="arrow" aria-hidden="true">&darr;</div><button type="button" class="node" data-ref="s_loop"><span>fetch_page retry loop</span><span class="st">rewritten</span></button><div class="arrow" aria-hidden="true">&darr;</div><button type="button" class="node" data-ref="s_test_giveup"><span>Six tests</span><span class="st">extended</span></button></div></div>
+<h3>1. Decide what counts as transient</h3><p><button type="button" class="ref" data-ref="s_retryable">client.py:3</button> names the two statuses worth retrying. <button type="button" class="ref" data-ref="s_error">client.py:6-9</button> adds an <code>attempts</code> field to <code>FetchError</code> so callers can log how hard the function tried. It defaults to 1, which keeps existing <code>FetchError(message)</code> calls valid.</p><h3>2. Compute the wait</h3><p><button type="button" class="ref" data-ref="s_delay">client.py:12-16</button> returns <code>Retry-After</code> when the server supplies it, limited to <code>max_delay</code>. Otherwise the wait doubles from 0.5s and stops growing at 8s. <code>attempt</code> counts from 1, so the first wait equals <code>base</code>.</p><h3>3. The retry loop</h3><p><button type="button" class="ref" data-ref="s_loop">client.py:19-32</button> returns on 200 and raises immediately for statuses outside <code>RETRYABLE</code>. On the final attempt it raises instead of sleeping, so no time is wasted after the last failure. Otherwise it sleeps and tries again. <code>sleep</code> is an argument, defaulting to <code>time.sleep</code>.</p><h3>4. Tests pin the waits</h3><p><button type="button" class="ref" data-ref="s_test_cap">test_client.py:43-47</button> and <button type="button" class="ref" data-ref="s_test_giveup">test_client.py:50-56</button> pass <code>waits.append</code> as <code>sleep</code>, so they assert the exact wait sequence without delaying the run.</p>
+<div class="full-only"><div class="callout"><b>Edge case not covered.</b> <code>Retry-After</code> may also be an HTTP date. The loop calls <code>float()</code> on the header, and <code>float("Wed, 21 Oct 2026 07:28:00 GMT")</code> raises <code>ValueError</code> when run. This is observed behavior of the code, not a stated goal of the change.</div></div>
+
+<div class="viz full-only"><div class="viz-head"><h3>Wait after each failed attempt</h3></div>
+<p class="cap">Without a Retry-After header, from running backoff_delay for attempts 1 to 6. The wait doubles, then stops at the 8 second cap.</p>
+<div class="bars" role="img" aria-label="Bar chart of wait in seconds by attempt: 0.5, 1.0, 2.0, 4.0, 8.0, 8.0"><div class="bar"><span>attempt 1</span><i style="width:6%"></i><span>0.5s</span></div><div class="bar"><span>attempt 2</span><i style="width:12%"></i><span>1.0s</span></div><div class="bar"><span>attempt 3</span><i style="width:25%"></i><span>2.0s</span></div><div class="bar"><span>attempt 4</span><i style="width:50%"></i><span>4.0s</span></div><div class="bar"><span>attempt 5</span><i style="width:100%"></i><span>8.0s</span></div><div class="bar"><span>attempt 6</span><i style="width:100%"></i><span>8.0s</span></div></div>
+<details><summary>Data table</summary><table class="state"><tr><th>attempt 1</th><td>0.5s</td></tr><tr><th>attempt 2</th><td>1.0s</td></tr><tr><th>attempt 3</th><td>2.0s</td></tr><tr><th>attempt 4</th><td>4.0s</td></tr><tr><th>attempt 5</th><td>8.0s</td></tr><tr><th>attempt 6</th><td>8.0s</td></tr></table></details></div>
+</section>
+<section><h2 id="quiz">Quiz</h2>
+<button type="button" class="btn" id="quiz-open" aria-expanded="false">Test yourself</button>
+<div id="quiz-host" hidden></div></section>
+</main>
+<aside id="panel" aria-label="Code panel">
+<div class="panel-head"><span class="panel-file"><bdi>No code selected</bdi></span><span class="panel-range"></span><button type="button" id="unpin" hidden>Unpin</button><button type="button" id="sheet-close" class="sheet-close">Close</button></div>
+<div class="panel-code"><div class="panel-empty">Hover or tap a file reference to see its code here.</div></div>
+</aside>
+</div>
+
+<dialog id="vizdlg" aria-label="Expanded visualization"><div class="viz-head"><strong>Expanded view</strong><button type="button" class="btn" id="vizdlg-close">Close</button></div><div id="vizdlg-body"></div></dialog>
+<script type="application/json" id="snippet-data">{"s_retryable": {"file": "pagefetch/client.py", "oldStart": 1, "oldEnd": 5, "newStart": 3, "newEnd": 3, "lines": [{"old": null, "new": 1, "kind": "add", "text": "import time"}, {"old": null, "new": 2, "kind": "add", "text": ""}, {"old": null, "new": 3, "kind": "add", "text": "RETRYABLE = {429, 503}", "focus": true}, {"old": null, "new": 4, "kind": "add", "text": ""}, {"old": null, "new": 5, "kind": "add", "text": ""}, {"old": 1, "new": 6, "kind": "ctx", "text": "class FetchError(Exception):"}, {"old": 2, "new": null, "kind": "del", "text": "    pass"}, {"old": null, "new": 7, "kind": "add", "text": "    def __init__(self, message, attempts=1):"}, {"old": null, "new": 8, "kind": "add", "text": "        super().__init__(message)"}, {"old": null, "new": 9, "kind": "add", "text": "        self.attempts = attempts"}, {"old": null, "new": 10, "kind": "add", "text": ""}, {"old": null, "new": 11, "kind": "add", "text": ""}, {"old": null, "new": 12, "kind": "add", "text": "def backoff_delay(attempt, retry_after=None, base=0.5, max_delay=8.0):"}, {"old": null, "new": 13, "kind": "add", "text": "    \"\"\"Seconds to wait after a failed attempt (attempt starts at 1).\"\"\""}, {"old": null, "new": 14, "kind": "add", "text": "    if retry_after is not None:"}, {"old": null, "new": 15, "kind": "add", "text": "        return min(retry_after, max_delay)"}, {"old": null, "new": 16, "kind": "add", "text": "    return min(base * 2 ** (attempt - 1), max_delay)"}, {"old": 3, "new": 17, "kind": "ctx", "text": ""}, {"old": 4, "new": 18, "kind": "ctx", "text": ""}, {"old": 5, "new": null, "kind": "del", "text": "def fetch_page(url, session):"}]}, "s_error": {"file": "pagefetch/client.py", "oldStart": 1, "oldEnd": 5, "newStart": 6, "newEnd": 9, "lines": [{"old": null, "new": 1, "kind": "add", "text": "import time"}, {"old": null, "new": 2, "kind": "add", "text": ""}, {"old": null, "new": 3, "kind": "add", "text": "RETRYABLE = {429, 503}"}, {"old": null, "new": 4, "kind": "add", "text": ""}, {"old": null, "new": 5, "kind": "add", "text": ""}, {"old": 1, "new": 6, "kind": "ctx", "text": "class FetchError(Exception):", "focus": true}, {"old": 2, "new": null, "kind": "del", "text": "    pass", "focus": true}, {"old": null, "new": 7, "kind": "add", "text": "    def __init__(self, message, attempts=1):", "focus": true}, {"old": null, "new": 8, "kind": "add", "text": "        super().__init__(message)", "focus": true}, {"old": null, "new": 9, "kind": "add", "text": "        self.attempts = attempts", "focus": true}, {"old": null, "new": 10, "kind": "add", "text": ""}, {"old": null, "new": 11, "kind": "add", "text": ""}, {"old": null, "new": 12, "kind": "add", "text": "def backoff_delay(attempt, retry_after=None, base=0.5, max_delay=8.0):"}, {"old": null, "new": 13, "kind": "add", "text": "    \"\"\"Seconds to wait after a failed attempt (attempt starts at 1).\"\"\""}, {"old": null, "new": 14, "kind": "add", "text": "    if retry_after is not None:"}, {"old": null, "new": 15, "kind": "add", "text": "        return min(retry_after, max_delay)"}, {"old": null, "new": 16, "kind": "add", "text": "    return min(base * 2 ** (attempt - 1), max_delay)"}, {"old": 3, "new": 17, "kind": "ctx", "text": ""}, {"old": 4, "new": 18, "kind": "ctx", "text": ""}, {"old": 5, "new": null, "kind": "del", "text": "def fetch_page(url, session):"}]}, "s_delay": {"file": "pagefetch/client.py", "oldStart": 1, "oldEnd": 9, "newStart": 12, "newEnd": 16, "lines": [{"old": null, "new": 5, "kind": "add", "text": ""}, {"old": 1, "new": 6, "kind": "ctx", "text": "class FetchError(Exception):"}, {"old": 2, "new": null, "kind": "del", "text": "    pass"}, {"old": null, "new": 7, "kind": "add", "text": "    def __init__(self, message, attempts=1):"}, {"old": null, "new": 8, "kind": "add", "text": "        super().__init__(message)"}, {"old": null, "new": 9, "kind": "add", "text": "        self.attempts = attempts"}, {"old": null, "new": 10, "kind": "add", "text": ""}, {"old": null, "new": 11, "kind": "add", "text": ""}, {"old": null, "new": 12, "kind": "add", "text": "def backoff_delay(attempt, retry_after=None, base=0.5, max_delay=8.0):", "focus": true}, {"old": null, "new": 13, "kind": "add", "text": "    \"\"\"Seconds to wait after a failed attempt (attempt starts at 1).\"\"\"", "focus": true}, {"old": null, "new": 14, "kind": "add", "text": "    if retry_after is not None:", "focus": true}, {"old": null, "new": 15, "kind": "add", "text": "        return min(retry_after, max_delay)", "focus": true}, {"old": null, "new": 16, "kind": "add", "text": "    return min(base * 2 ** (attempt - 1), max_delay)", "focus": true}, {"old": 3, "new": 17, "kind": "ctx", "text": ""}, {"old": 4, "new": 18, "kind": "ctx", "text": ""}, {"old": 5, "new": null, "kind": "del", "text": "def fetch_page(url, session):"}, {"old": 6, "new": null, "kind": "del", "text": "    resp = session.get(url)"}, {"old": 7, "new": null, "kind": "del", "text": "    if resp.status != 200:"}, {"old": 8, "new": null, "kind": "del", "text": "        raise FetchError(f\"{url} returned {resp.status}\")"}, {"old": 9, "new": null, "kind": "del", "text": "    return resp.body"}]}, "s_loop": {"file": "pagefetch/client.py", "oldStart": 4, "oldEnd": 9, "newStart": 19, "newEnd": 32, "lines": [{"old": 4, "new": 18, "kind": "ctx", "text": ""}, {"old": 5, "new": null, "kind": "del", "text": "def fetch_page(url, session):"}, {"old": 6, "new": null, "kind": "del", "text": "    resp = session.get(url)"}, {"old": 7, "new": null, "kind": "del", "text": "    if resp.status != 200:"}, {"old": 8, "new": null, "kind": "del", "text": "        raise FetchError(f\"{url} returned {resp.status}\")"}, {"old": 9, "new": null, "kind": "del", "text": "    return resp.body"}, {"old": null, "new": 19, "kind": "add", "text": "def fetch_page(url, session, max_attempts=4, sleep=time.sleep):", "focus": true}, {"old": null, "new": 20, "kind": "add", "text": "    for attempt in range(1, max_attempts + 1):", "focus": true}, {"old": null, "new": 21, "kind": "add", "text": "        resp = session.get(url)", "focus": true}, {"old": null, "new": 22, "kind": "add", "text": "        if resp.status == 200:", "focus": true}, {"old": null, "new": 23, "kind": "add", "text": "            return resp.body", "focus": true}, {"old": null, "new": 24, "kind": "add", "text": "        if resp.status not in RETRYABLE:", "focus": true}, {"old": null, "new": 25, "kind": "add", "text": "            raise FetchError(f\"{url} returned {resp.status}\", attempts=attempt)", "focus": true}, {"old": null, "new": 26, "kind": "add", "text": "        if attempt == max_attempts:", "focus": true}, {"old": null, "new": 27, "kind": "add", "text": "            raise FetchError(", "focus": true}, {"old": null, "new": 28, "kind": "add", "text": "                f\"{url} still {resp.status} after {attempt} attempts\",", "focus": true}, {"old": null, "new": 29, "kind": "add", "text": "                attempts=attempt,", "focus": true}, {"old": null, "new": 30, "kind": "add", "text": "            )", "focus": true}, {"old": null, "new": 31, "kind": "add", "text": "        header = resp.headers.get(\"Retry-After\")", "focus": true}, {"old": null, "new": 32, "kind": "add", "text": "        sleep(backoff_delay(attempt, float(header) if header else None))", "focus": true}]}, "s_test_cap": {"file": "tests/test_client.py", "oldStart": 0, "oldEnd": 0, "newStart": 43, "newEnd": 47, "lines": [{"old": null, "new": 35, "kind": "add", "text": ""}, {"old": null, "new": 36, "kind": "add", "text": "def test_retries_503_then_succeeds():"}, {"old": null, "new": 37, "kind": "add", "text": "    waits = []"}, {"old": null, "new": 38, "kind": "add", "text": "    session = FakeSession([Resp(503), Resp(503), Resp(200, \"ok\")])"}, {"old": null, "new": 39, "kind": "add", "text": "    assert fetch_page(\"http://x/a\", session, sleep=waits.append) == \"ok\""}, {"old": null, "new": 40, "kind": "add", "text": "    assert waits == [0.5, 1.0]"}, {"old": null, "new": 41, "kind": "add", "text": ""}, {"old": null, "new": 42, "kind": "add", "text": ""}, {"old": null, "new": 43, "kind": "add", "text": "def test_retry_after_is_capped():", "focus": true}, {"old": null, "new": 44, "kind": "add", "text": "    waits = []", "focus": true}, {"old": null, "new": 45, "kind": "add", "text": "    session = FakeSession([Resp(429, headers={\"Retry-After\": \"30\"}), Resp(200, \"ok\")])", "focus": true}, {"old": null, "new": 46, "kind": "add", "text": "    fetch_page(\"http://x/a\", session, sleep=waits.append)", "focus": true}, {"old": null, "new": 47, "kind": "add", "text": "    assert waits == [8.0]", "focus": true}, {"old": null, "new": 48, "kind": "add", "text": ""}, {"old": null, "new": 49, "kind": "add", "text": ""}, {"old": null, "new": 50, "kind": "add", "text": "def test_gives_up_after_max_attempts():"}, {"old": null, "new": 51, "kind": "add", "text": "    waits = []"}, {"old": null, "new": 52, "kind": "add", "text": "    session = FakeSession([Resp(503)] * 4)"}, {"old": null, "new": 53, "kind": "add", "text": "    with pytest.raises(FetchError) as err:"}, {"old": null, "new": 54, "kind": "add", "text": "        fetch_page(\"http://x/a\", session, sleep=waits.append)"}]}, "s_test_giveup": {"file": "tests/test_client.py", "oldStart": 0, "oldEnd": 0, "newStart": 50, "newEnd": 56, "lines": [{"old": null, "new": 41, "kind": "add", "text": ""}, {"old": null, "new": 42, "kind": "add", "text": ""}, {"old": null, "new": 43, "kind": "add", "text": "def test_retry_after_is_capped():"}, {"old": null, "new": 44, "kind": "add", "text": "    waits = []"}, {"old": null, "new": 45, "kind": "add", "text": "    session = FakeSession([Resp(429, headers={\"Retry-After\": \"30\"}), Resp(200, \"ok\")])"}, {"old": null, "new": 46, "kind": "add", "text": "    fetch_page(\"http://x/a\", session, sleep=waits.append)"}, {"old": null, "new": 47, "kind": "add", "text": "    assert waits == [8.0]"}, {"old": null, "new": 48, "kind": "add", "text": ""}, {"old": null, "new": 49, "kind": "add", "text": ""}, {"old": null, "new": 50, "kind": "add", "text": "def test_gives_up_after_max_attempts():", "focus": true}, {"old": null, "new": 51, "kind": "add", "text": "    waits = []", "focus": true}, {"old": null, "new": 52, "kind": "add", "text": "    session = FakeSession([Resp(503)] * 4)", "focus": true}, {"old": null, "new": 53, "kind": "add", "text": "    with pytest.raises(FetchError) as err:", "focus": true}, {"old": null, "new": 54, "kind": "add", "text": "        fetch_page(\"http://x/a\", session, sleep=waits.append)", "focus": true}, {"old": null, "new": 55, "kind": "add", "text": "    assert err.value.attempts == 4", "focus": true}, {"old": null, "new": 56, "kind": "add", "text": "    assert waits == [0.5, 1.0, 2.0]", "focus": true}, {"old": null, "new": 57, "kind": "add", "text": ""}, {"old": null, "new": 58, "kind": "add", "text": ""}, {"old": null, "new": 59, "kind": "add", "text": "def test_delay_grows_then_caps():"}, {"old": null, "new": 60, "kind": "add", "text": "    assert [backoff_delay(n) for n in range(1, 7)] == [0.5, 1.0, 2.0, 4.0, 8.0, 8.0]"}]}}</script>
+<script type="application/json" id="viz-data">{"flow": {"id": "flow", "viewBox": "0 0 380 340", "alt": "Flow diagram of fetch_page: send request, check status, return body on 200, raise on other statuses, and for 429 or 503 check attempts left, then sleep and retry or raise.", "nodes": [{"id": "req", "label": "Send request", "x": 185, "y": 30, "ref": "s_loop"}, {"id": "status", "label": "Status code?", "x": 185, "y": 110, "ref": "s_loop"}, {"id": "ok", "label": "Return body", "x": 62, "y": 205, "ref": "s_loop"}, {"id": "retry", "label": "Attempts left?", "x": 315, "y": 205, "ref": "s_loop"}, {"id": "raise", "label": "Raise FetchError", "x": 185, "y": 305, "ref": "s_error"}, {"id": "wait", "label": "Sleep, then retry", "x": 315, "y": 305, "ref": "s_delay"}], "edges": [{"id": "req-status", "points": [[185, 47], [185, 93]]}, {"id": "status-ok", "points": [[155, 125], [82, 188]], "label": "200", "lx": 98, "ly": 150}, {"id": "status-retry", "points": [[215, 125], [295, 188]], "label": "429 / 503", "lx": 262, "ly": 150}, {"id": "status-raise", "points": [[185, 127], [185, 288]], "label": "other", "lx": 191, "ly": 215}, {"id": "retry-raise", "points": [[282, 222], [234, 290]], "label": "no", "lx": 238, "ly": 262}, {"id": "retry-wait", "points": [[315, 222], [315, 288]], "label": "yes", "lx": 321, "ly": 262}, {"id": "wait-req", "points": [[373, 305], [377, 305], [377, 30], [245, 30]]}], "cases": [{"name": "503, 503, then 200", "before": "raises FetchError (https://example.com/report returned 503), after 1 call", "after": "3 calls, waits [0.5, 1.0], returns the body", "steps": [{"caption": "Attempt 1: the server answers 503.", "nodes": ["req", "status"], "edges": ["req-status"], "state": {"attempt": "1 of 4", "status": 503, "waited so far": "0.0s"}, "ref": "s_loop"}, {"caption": "503 is retryable. Check whether attempts are left.", "nodes": ["status", "retry"], "edges": ["status-retry"], "state": {"attempt": "1 of 4", "status": 503, "waited so far": "0.0s"}, "ref": "s_loop"}, {"caption": "Attempts left (1 of 4 used). backoff_delay(1) doubles from 0.5s, giving 0.5s.", "nodes": ["retry", "wait"], "edges": ["retry-wait"], "state": {"attempt": "1 of 4", "status": 503, "waited so far": "0.0s"}, "ref": "s_delay"}, {"caption": "Sleep 0.5s, then send the request again.", "nodes": ["wait", "req"], "edges": ["wait-req"], "state": {"attempt": "1 of 4", "status": 503, "waited so far": "0.5s"}, "ref": "s_loop"}, {"caption": "Attempt 2: the server answers 503.", "nodes": ["req", "status"], "edges": ["req-status"], "state": {"attempt": "2 of 4", "status": 503, "waited so far": "0.5s"}, "ref": "s_loop"}, {"caption": "503 is retryable. Check whether attempts are left.", "nodes": ["status", "retry"], "edges": ["status-retry"], "state": {"attempt": "2 of 4", "status": 503, "waited so far": "0.5s"}, "ref": "s_loop"}, {"caption": "Attempts left (2 of 4 used). backoff_delay(2) doubles from 0.5s, giving 1.0s.", "nodes": ["retry", "wait"], "edges": ["retry-wait"], "state": {"attempt": "2 of 4", "status": 503, "waited so far": "0.5s"}, "ref": "s_delay"}, {"caption": "Sleep 1.0s, then send the request again.", "nodes": ["wait", "req"], "edges": ["wait-req"], "state": {"attempt": "2 of 4", "status": 503, "waited so far": "1.5s"}, "ref": "s_loop"}, {"caption": "Attempt 3: the server answers 200.", "nodes": ["req", "status"], "edges": ["req-status"], "state": {"attempt": "3 of 4", "status": 200, "waited so far": "1.5s"}, "ref": "s_loop"}, {"caption": "Status 200: return the body.", "nodes": ["status", "ok"], "edges": ["status-ok"], "state": {"attempt": "3 of 4", "status": 200, "waited so far": "1.5s", "result": "body returned"}, "ref": "s_loop"}]}, {"name": "429 with Retry-After: 30", "before": "raises FetchError (https://example.com/report returned 429), after 1 call", "after": "2 calls, waits [8.0], returns the body", "steps": [{"caption": "Attempt 1: the server answers 429.", "nodes": ["req", "status"], "edges": ["req-status"], "state": {"attempt": "1 of 4", "status": 429, "waited so far": "0.0s"}, "ref": "s_loop"}, {"caption": "429 is retryable. Check whether attempts are left.", "nodes": ["status", "retry"], "edges": ["status-retry"], "state": {"attempt": "1 of 4", "status": 429, "waited so far": "0.0s"}, "ref": "s_loop"}, {"caption": "Attempts left (1 of 4 used). Retry-After says 30s, but max_delay caps the wait at 8.0s.", "nodes": ["retry", "wait"], "edges": ["retry-wait"], "state": {"attempt": "1 of 4", "status": 429, "waited so far": "0.0s"}, "ref": "s_delay"}, {"caption": "Sleep 8.0s, then send the request again.", "nodes": ["wait", "req"], "edges": ["wait-req"], "state": {"attempt": "1 of 4", "status": 429, "waited so far": "8.0s"}, "ref": "s_loop"}, {"caption": "Attempt 2: the server answers 200.", "nodes": ["req", "status"], "edges": ["req-status"], "state": {"attempt": "2 of 4", "status": 200, "waited so far": "8.0s"}, "ref": "s_loop"}, {"caption": "Status 200: return the body.", "nodes": ["status", "ok"], "edges": ["status-ok"], "state": {"attempt": "2 of 4", "status": 200, "waited so far": "8.0s", "result": "body returned"}, "ref": "s_loop"}]}, {"name": "503 on every attempt", "before": "raises FetchError (https://example.com/report returned 503), after 1 call", "after": "4 calls, waits [0.5, 1.0, 2.0], raises FetchError", "steps": [{"caption": "Attempt 1: the server answers 503.", "nodes": ["req", "status"], "edges": ["req-status"], "state": {"attempt": "1 of 4", "status": 503, "waited so far": "0.0s"}, "ref": "s_loop"}, {"caption": "503 is retryable. Check whether attempts are left.", "nodes": ["status", "retry"], "edges": ["status-retry"], "state": {"attempt": "1 of 4", "status": 503, "waited so far": "0.0s"}, "ref": "s_loop"}, {"caption": "Attempts left (1 of 4 used). backoff_delay(1) doubles from 0.5s, giving 0.5s.", "nodes": ["retry", "wait"], "edges": ["retry-wait"], "state": {"attempt": "1 of 4", "status": 503, "waited so far": "0.0s"}, "ref": "s_delay"}, {"caption": "Sleep 0.5s, then send the request again.", "nodes": ["wait", "req"], "edges": ["wait-req"], "state": {"attempt": "1 of 4", "status": 503, "waited so far": "0.5s"}, "ref": "s_loop"}, {"caption": "Attempt 2: the server answers 503.", "nodes": ["req", "status"], "edges": ["req-status"], "state": {"attempt": "2 of 4", "status": 503, "waited so far": "0.5s"}, "ref": "s_loop"}, {"caption": "503 is retryable. Check whether attempts are left.", "nodes": ["status", "retry"], "edges": ["status-retry"], "state": {"attempt": "2 of 4", "status": 503, "waited so far": "0.5s"}, "ref": "s_loop"}, {"caption": "Attempts left (2 of 4 used). backoff_delay(2) doubles from 0.5s, giving 1.0s.", "nodes": ["retry", "wait"], "edges": ["retry-wait"], "state": {"attempt": "2 of 4", "status": 503, "waited so far": "0.5s"}, "ref": "s_delay"}, {"caption": "Sleep 1.0s, then send the request again.", "nodes": ["wait", "req"], "edges": ["wait-req"], "state": {"attempt": "2 of 4", "status": 503, "waited so far": "1.5s"}, "ref": "s_loop"}, {"caption": "Attempt 3: the server answers 503.", "nodes": ["req", "status"], "edges": ["req-status"], "state": {"attempt": "3 of 4", "status": 503, "waited so far": "1.5s"}, "ref": "s_loop"}, {"caption": "503 is retryable. Check whether attempts are left.", "nodes": ["status", "retry"], "edges": ["status-retry"], "state": {"attempt": "3 of 4", "status": 503, "waited so far": "1.5s"}, "ref": "s_loop"}, {"caption": "Attempts left (3 of 4 used). backoff_delay(3) doubles from 0.5s, giving 2.0s.", "nodes": ["retry", "wait"], "edges": ["retry-wait"], "state": {"attempt": "3 of 4", "status": 503, "waited so far": "1.5s"}, "ref": "s_delay"}, {"caption": "Sleep 2.0s, then send the request again.", "nodes": ["wait", "req"], "edges": ["wait-req"], "state": {"attempt": "3 of 4", "status": 503, "waited so far": "3.5s"}, "ref": "s_loop"}, {"caption": "Attempt 4: the server answers 503.", "nodes": ["req", "status"], "edges": ["req-status"], "state": {"attempt": "4 of 4", "status": 503, "waited so far": "3.5s"}, "ref": "s_loop"}, {"caption": "503 is retryable. Check whether attempts are left.", "nodes": ["status", "retry"], "edges": ["status-retry"], "state": {"attempt": "4 of 4", "status": 503, "waited so far": "3.5s"}, "ref": "s_loop"}, {"caption": "No attempts left (4 of 4 used): raise FetchError instead of waiting.", "nodes": ["retry", "raise"], "edges": ["retry-raise"], "state": {"attempt": "4 of 4", "status": 503, "waited so far": "3.5s", "result": "FetchError, attempts=4"}, "ref": "s_loop"}]}, {"name": "404 Not Found", "before": "raises FetchError (https://example.com/report returned 404), after 1 call", "after": "1 calls, waits [], raises FetchError", "steps": [{"caption": "Attempt 1: the server answers 404.", "nodes": ["req", "status"], "edges": ["req-status"], "state": {"attempt": "1 of 4", "status": 404, "waited so far": "0.0s"}, "ref": "s_loop"}, {"caption": "404 is not retryable, so raise FetchError right away (attempts=1).", "nodes": ["status", "raise"], "edges": ["status-raise"], "state": {"attempt": "1 of 4", "status": 404, "waited so far": "0.0s", "result": "FetchError, attempts=1"}, "ref": "s_loop"}]}]}}</script>
+<script type="application/json" id="quiz-data">[{"prompt": "Why does backoff_delay limit a server's Retry-After value to max_delay?", "options": ["The HTTP specification does not allow Retry-After values above 8 seconds.", "A server could ask for a very long wait, so the cap bounds each attempt's stall.", "Retry-After arrives in milliseconds, so the cap converts it to a usable range.", "The cap makes the retry loop stop early, before it can reach max_attempts."], "correct": 1, "explain": "The cap bounds the worst case wait per attempt. In the 30 second case the function waits 8.0 seconds.", "ref": "s_delay", "refLabel": "client.py:12-16"}, {"prompt": "The server answers 503 on all four attempts. What happens?", "options": ["Four waits happen, then FetchError is raised after the fourth attempt.", "The function gives up quietly and returns None after the fourth attempt.", "FetchError is raised after the third attempt, with attempts equal to 3.", "Three waits of 0.5s, 1.0s, and 2.0s happen, then FetchError has attempts=4."], "correct": 3, "explain": "The loop raises on the last attempt instead of sleeping, so there are three waits for four attempts. This is the 503 on every attempt case in the stepper.", "ref": "s_loop", "refLabel": "client.py:19-32"}, {"prompt": "The server answers 404 on the first request. What does fetch_page do?", "options": ["It raises FetchError(attempts=1) immediately, without any wait.", "It retries up to four times, because any failure may be transient.", "It waits 0.5s once, then raises FetchError on the second try.", "It returns the response body so the caller can inspect the status."], "correct": 0, "explain": "404 is outside RETRYABLE, so the loop raises on the first attempt. The test for a 500 asserts one call and attempts equal to 1.", "ref": "s_loop", "refLabel": "client.py:19-32"}, {"prompt": "What does the sleep argument of fetch_page make possible?", "options": ["Callers can disable retries by passing None.", "The retry loop can run on several threads at once.", "Tests can record the waits and skip real delays.", "The wait can switch from seconds to milliseconds."], "correct": 2, "explain": "The tests pass waits.append as sleep, so they assert the exact wait sequence and finish instantly.", "ref": "s_test_giveup", "refLabel": "test_client.py:50-56"}, {"prompt": "With no Retry-After header, what wait does backoff_delay(6) return?", "options": ["16.0 seconds, because the doubling keeps going.", "8.0 seconds, because 16.0 is limited to max_delay.", "4.0 seconds, because the sequence resets after five attempts.", "0.5 seconds, because base applies to every attempt."], "correct": 1, "explain": "The uncapped value would be 0.5 * 2**5 = 16.0. The cap limits it to 8.0. The test for growth asserts 0.5, 1.0, 2.0, 4.0, 8.0, 8.0.", "ref": "s_delay", "refLabel": "client.py:12-16"}]</script>
+<script>
+(function(){
+'use strict';
+var NS='http://www.w3.org/2000/svg';
+var mobile=window.matchMedia('(max-width:899px)');
+function el(tag,cls,text){var e=document.createElement(tag);if(cls)e.className=cls;if(text!=null)e.textContent=text;return e}
+function svgEl(name,attrs){var e=document.createElementNS(NS,name);for(var k in attrs){e.setAttribute(k,attrs[k])}return e}
+function safe(name,container,fn){try{fn()}catch(err){console.error('[explain-diff] '+name+' failed',err);if(container){var m=el('div','fail',name+' failed to load');container.appendChild(m)}}}
+function readJSON(id){return JSON.parse(document.getElementById(id).textContent)}
+
+/* ---- Brief / Full ---- */
+safe('Mode toggle',document.querySelector('.modes'),function(){
+ var btns=document.querySelectorAll('.modes button');
+ function set(mode){document.body.classList.toggle('brief',mode==='brief');
+  btns.forEach(function(b){b.setAttribute('aria-pressed',b.dataset.mode===mode?'true':'false')});
+  var bg=document.getElementById('bg-body'),bt=document.getElementById('bg-toggle');
+  if(mode==='full'){bg.classList.add('open');bt.setAttribute('aria-expanded','true');bt.textContent='Hide background'}}
+ btns.forEach(function(b){b.addEventListener('click',function(){set(b.dataset.mode)})});
+ var bt=document.getElementById('bg-toggle'),bg=document.getElementById('bg-body');
+ bt.addEventListener('click',function(){var o=bg.classList.toggle('open');bt.setAttribute('aria-expanded',o?'true':'false');bt.textContent=o?'Hide background':'Show background'});
+});
+
+/* ---- Code panel ---- */
+var SNIP={};
+var panel=document.getElementById('panel');
+var pFile=panel.querySelector('.panel-file bdi'),pRange=panel.querySelector('.panel-range'),pCode=panel.querySelector('.panel-code'),pUnpin=document.getElementById('unpin');
+var Panel={pinned:null};
+function emptyPanel(){pFile.textContent='No code selected';pRange.textContent='';pCode.textContent='';pCode.appendChild(el('div','panel-empty','Hover or tap a file reference to see its code here.'));pUnpin.hidden=true}
+Panel.render=function(id){var s=SNIP[id];if(!s)return;
+ pFile.textContent=s.file;pRange.textContent=s.newStart===s.newEnd?'line '+s.newStart:'lines '+s.newStart+'-'+s.newEnd;pCode.textContent='';
+ var pre=el('pre'),code=el('code');
+ s.lines.forEach(function(L){var row=el('span','l '+L.kind+(L.focus?' focus':''));
+  row.appendChild(el('span','g',L.old==null?'':String(L.old)));row.appendChild(el('span','g',L.new==null?'':String(L.new)));
+  row.appendChild(el('span','m',L.kind==='add'?'+':(L.kind==='del'?'-':' ')));row.appendChild(el('span','t',L.text));code.appendChild(row)});
+ pre.appendChild(code);pCode.appendChild(pre);
+ var f=code.querySelector('.focus');if(f){pCode.scrollTop=Math.max(0,f.offsetTop-pCode.clientHeight/2+f.offsetHeight/2)}
+ pUnpin.hidden=!Panel.pinned};
+Panel.restore=function(){if(Panel.pinned){Panel.render(Panel.pinned)}else{emptyPanel()}};
+Panel.pin=function(id){if(!SNIP[id])return;Panel.pinned=id;Panel.render(id);if(mobile.matches){panel.classList.add('open')}};
+Panel.unpin=function(){Panel.pinned=null;emptyPanel();panel.classList.remove('open')};
+safe('Code snippets',null,function(){
+ try{SNIP=readJSON('snippet-data')}catch(err){console.error('[explain-diff] snippet data',err);pCode.textContent='';pCode.appendChild(el('div','panel-fail','Code snippets failed to load'));return}
+ emptyPanel();
+});
+pUnpin.addEventListener('click',Panel.unpin);
+document.getElementById('sheet-close').addEventListener('click',function(){panel.classList.remove('open')});
+document.addEventListener('keydown',function(e){if(e.key==='Escape'&&!document.getElementById('vizdlg').open){Panel.unpin()}});
+function refOf(t){return t&&t.closest?t.closest('[data-ref]'):null}
+document.addEventListener('mouseover',function(e){var r=refOf(e.target);if(r&&!mobile.matches&&SNIP[r.dataset.ref]){Panel.render(r.dataset.ref)}});
+document.addEventListener('mouseout',function(e){var r=refOf(e.target);if(r&&!mobile.matches){Panel.restore()}});
+document.addEventListener('focusin',function(e){var r=refOf(e.target);if(r&&SNIP[r.dataset.ref]){Panel.render(r.dataset.ref)}});
+document.addEventListener('focusout',function(e){var r=refOf(e.target);if(r){Panel.restore()}});
+document.addEventListener('click',function(e){var r=refOf(e.target);if(r&&r.dataset.ref){Panel.pin(r.dataset.ref)}});
+document.addEventListener('keydown',function(e){var r=refOf(e.target);if(r&&r.tagName&&r.tagName.toLowerCase()==='g'&&(e.key==='Enter'||e.key===' ')){e.preventDefault();Panel.pin(r.dataset.ref)}});
+
+/* ---- Visualizations ---- */
+var VIZ={};
+try{VIZ=readJSON('viz-data')}catch(err){console.error('[explain-diff] viz data',err)}
+
+function Stepper(host,spec){
+ var cur={ci:0,si:0},timer=null;
+ var svg=svgEl('svg',{'class':'flow',viewBox:spec.viewBox,role:'img','aria-label':spec.alt});
+ var defs=svgEl('defs',{}),mk=svgEl('marker',{id:spec.id+'-ar',viewBox:'0 0 10 10',refX:'9',refY:'5',markerWidth:'7',markerHeight:'7',orient:'auto-start-reverse'});
+ mk.appendChild(svgEl('path',{d:'M0 0L10 5L0 10z',fill:'#8c959f'}));defs.appendChild(mk);svg.appendChild(defs);
+ var edgeEls={},nodeEls={};
+ spec.edges.forEach(function(ed){var p=svgEl('path',{'class':'edge',d:'M'+ed.points.map(function(q){return q.join(' ')}).join(' L'),'marker-end':'url(#'+spec.id+'-ar)'});svg.appendChild(p);edgeEls[ed.id]=p;
+  if(ed.label){var t=svgEl('text',{'class':'elabel',x:ed.lx,y:ed.ly});t.textContent=ed.label;svg.appendChild(t)}});
+ spec.nodes.forEach(function(n){var g=svgEl('g',{'class':'node'});if(n.ref){g.setAttribute('data-ref',n.ref);g.setAttribute('tabindex','0');g.setAttribute('role','button');g.setAttribute('aria-label',n.label+', show code')}
+  g.appendChild(svgEl('rect',{x:n.x-58,y:n.y-17,width:116,height:34,rx:8}));var t=svgEl('text',{x:n.x,y:n.y});t.textContent=n.label;g.appendChild(t);svg.appendChild(g);nodeEls[n.id]=g});
+ var seg=el('div','seg');seg.setAttribute('role','group');seg.setAttribute('aria-label','Input case');
+ var ba=el('div','ba'),beforeBox=el('div','before'),afterBox=el('div','after');ba.appendChild(beforeBox);ba.appendChild(afterBox);
+ var ctl=el('div','ctl'),bPrev=el('button',null,'Prev'),bNext=el('button',null,'Next'),bReset=el('button',null,'Reset'),bPlay=el('button',null,'Play'),count=el('span','count');
+ [bPrev,bNext,bReset,bPlay].forEach(function(b){b.type='button';ctl.appendChild(b)});ctl.appendChild(count);
+ var capEl=el('div','stepcap');capEl.setAttribute('aria-live','polite');
+ var table=el('table','state');
+ spec.cases.forEach(function(c,i){var b=el('button',null,c.name);b.type='button';b.addEventListener('click',function(){stop();cur.ci=i;cur.si=0;draw()});seg.appendChild(b)});
+ host.appendChild(seg);host.appendChild(ba);host.appendChild(svg);host.appendChild(ctl);host.appendChild(capEl);host.appendChild(table);
+ function stop(){if(timer){clearInterval(timer);timer=null;bPlay.textContent='Play'}}
+ function setBox(box,label,txt){box.textContent='';box.appendChild(el('b',null,label));box.appendChild(document.createTextNode(txt))}
+ function draw(){var c=spec.cases[cur.ci],s=c.steps[cur.si];
+  Array.prototype.forEach.call(seg.children,function(b,i){b.setAttribute('aria-pressed',i===cur.ci?'true':'false')});
+  setBox(beforeBox,'Before this change: ',c.before);setBox(afterBox,'After this change: ',c.after);
+  for(var k in nodeEls){nodeEls[k].classList.toggle('on',s.nodes.indexOf(k)>=0)}
+  for(var j in edgeEls){edgeEls[j].classList.toggle('on',s.edges.indexOf(j)>=0)}
+  capEl.textContent=s.caption;count.textContent='Step '+(cur.si+1)+' of '+c.steps.length;
+  table.textContent='';for(var key in s.state){var tr=el('tr');tr.appendChild(el('th',null,key));tr.appendChild(el('td',null,String(s.state[key])));table.appendChild(tr)}
+  bPrev.disabled=cur.si===0;bNext.disabled=cur.si===c.steps.length-1;
+  if(s.ref&&!mobile.matches){Panel.pin(s.ref)}}
+ bPrev.addEventListener('click',function(){stop();if(cur.si>0){cur.si--;draw()}});
+ bNext.addEventListener('click',function(){stop();var c=spec.cases[cur.ci];if(cur.si<c.steps.length-1){cur.si++;draw()}});
+ bReset.addEventListener('click',function(){stop();cur.si=0;draw()});
+ bPlay.addEventListener('click',function(){if(timer){stop();return}var c=spec.cases[cur.ci];if(cur.si>=c.steps.length-1){cur.si=0}bPlay.textContent='Pause';draw();
+  timer=setInterval(function(){var cc=spec.cases[cur.ci];if(cur.si<cc.steps.length-1){cur.si++;draw()}else{stop()}},1400)});
+ /* initial state renders without pinning code */
+ var c0=spec.cases[0],s0=c0.steps[0];
+ Array.prototype.forEach.call(seg.children,function(b,i){b.setAttribute('aria-pressed',i===0?'true':'false')});
+ setBox(beforeBox,'Before this change: ',c0.before);setBox(afterBox,'After this change: ',c0.after);
+ nodeEls[s0.nodes[0]].classList.add('on');capEl.textContent=s0.caption;count.textContent='Step 1 of '+c0.steps.length;
+ for(var k0 in s0.state){var tr0=el('tr');tr0.appendChild(el('th',null,k0));tr0.appendChild(el('td',null,String(s0.state[k0])));table.appendChild(tr0)}
+ bPrev.disabled=true;
+}
+document.querySelectorAll('[data-viz="stepper"]').forEach(function(host){safe('Visualization',host,function(){Stepper(host,VIZ[host.dataset.spec])})});
+
+document.querySelectorAll('.expand').forEach(function(btn){
+ var dlg=document.getElementById('vizdlg'),body=document.getElementById('vizdlg-body'),holder=null,home=null;
+ btn.addEventListener('click',function(){var v=btn.closest('.viz');home=document.createElement('span');v.parentNode.insertBefore(home,v);holder=v;body.appendChild(v);dlg.showModal()});
+ dlg.addEventListener('close',function(){if(holder&&home){home.parentNode.insertBefore(holder,home);home.remove();holder=null}});
+});
+document.getElementById('vizdlg-close').addEventListener('click',function(){document.getElementById('vizdlg').close()});
+
+/* ---- Quiz ---- */
+safe('Quiz',document.getElementById('quiz-host'),function(){
+ var Q=readJSON('quiz-data'),host=document.getElementById('quiz-host'),openBtn=document.getElementById('quiz-open');
+ var score=0,done=0,summary=el('p',null,'');summary.setAttribute('aria-live','polite');
+ Q.forEach(function(q,qi){var card=el('div','q');card.appendChild(el('p',null,(qi+1)+'. '+q.prompt));
+  var opts=el('div','opts'),fb=el('div','fb');fb.hidden=true;var btns=[];
+  q.options.forEach(function(text,oi){var b=el('button','opt',text);b.type='button';btns.push(b);
+   b.addEventListener('click',function(){btns.forEach(function(x){x.disabled=true});
+    var ok=oi===q.correct;b.classList.add('sel',ok?'right':'wrong');if(!ok){btns[q.correct].classList.add('right')}
+    fb.hidden=false;fb.textContent='';var strong=el('strong',null,ok?'✓ Correct. ':'✗ Not quite. ');fb.appendChild(strong);fb.appendChild(document.createTextNode(q.explain));
+    if(q.ref){fb.appendChild(document.createTextNode(' '));var r=el('button','ref',q.refLabel);r.type='button';r.dataset.ref=q.ref;fb.appendChild(r)}
+    done++;if(ok)score++;summary.textContent=done+' of '+Q.length+' answered, '+score+' correct.'});
+   opts.appendChild(b)});
+  card.appendChild(opts);card.appendChild(fb);host.appendChild(card)});
+ host.appendChild(summary);
+ openBtn.addEventListener('click',function(){var o=host.hidden;host.hidden=!o;openBtn.setAttribute('aria-expanded',o?'true':'false');openBtn.textContent=o?'Hide quiz':'Test yourself'});
+});
+})();
+</script>
+</body>
+</html>

@@ -11,6 +11,24 @@ A Claude Code plugin that explains a code change as one interactive HTML page. P
 
 The page opens in Brief mode, with a Full toggle for background and extra detail.
 
+## Example
+
+These screenshots come from a page the skill generated for a small invented sample repository (a retry and backoff change to a `fetch_page` function). The code and tests are made up for this demo. The page itself is real output, and its visualization values come from running both versions of the sample code.
+
+**Linked code panel.** Select a file reference or a node and the diff appears on the right, with removed and added lines together and old and new line numbers.
+
+![Code section with a change map and the linked code panel](docs/images/code-panel.png)
+
+**Interactive visualization.** Choose an input case and step through what the function does. Each step loads the matching code.
+
+![Stepper visualization with the code panel showing the retry loop](docs/images/visualization.png)
+
+**Intent.** What the change does and why, with each claim marked as stated or inferred.
+
+![Intent section with stated and inferred labels](docs/images/intent.png)
+
+Download [`docs/example-explanation.html`](docs/example-explanation.html) and open it in a browser to try the full page, including the quiz.
+
 ## Install
 
 In Claude Code:
