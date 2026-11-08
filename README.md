@@ -7,6 +7,7 @@ A Claude Code plugin that explains a code change as one interactive HTML page. P
 - **Intent:** what the change does and why. Each claim is marked Stated (from the PR, commits, issues, or tests, with the source named) or Inferred (read from the code).
 - **Visualizations:** interactive diagrams chosen for the kind of change. Step through a workflow with different inputs, compare data structures before and after, follow data through each stage of a transformation, or explore dependencies. Click any node to see its code.
 - **Code:** a split view. The narrative is on the left. Hover or click any file and line reference and the exact code appears in a panel on the right, with removed and added lines together and old and new line numbers.
+- **Review:** a guide for the reviewer. Where to look, ranked by risk (paths REVIEW.md marks sensitive rank high). What tests and CI already cover, and what nothing covers. Whether the fix is at the root cause or treats a symptom. How to undo the change. A checklist of the REVIEW.md rules the diff touches, with each rule's failure definition beside the code. It points the reviewer at what to read; it does not find bugs, approve, or give a verdict.
 - **Quiz:** five multiple choice questions that check understanding of the change.
 
 The page opens in Brief mode, with a Full toggle for background and extra detail.
@@ -55,6 +56,13 @@ Plugin skills are namespaced by plugin name, so you can also invoke it directly 
 
 The page is saved as `/tmp/YYYY-MM-DD-explanation-<slug>.html`, outside your repository. Claude returns the path.
 
+## Where it fits
+
+With the `/qa`, `/a11y` and `/pr-prep` skills installed, explain-diff runs after `/pr-prep` opens the PR and before `/qa` and human approval.
+
+- **REVIEW.md.** The skill reads the repo's `REVIEW.md` for sensitive paths, rules and skip paths. If there is none, it asks once whether to set one up. On yes it runs a `review-init` skill when one is installed, which drafts REVIEW.md on its own branch for the tech lead to approve in a PR, then builds from the draft. If review-init is not installed it says so and builds on defaults, as it does on no.
+- **For QA.** The skill writes the cases QA should run, tied to the acceptance criteria, to `/tmp/YYYY-MM-DD-for-qa-<slug>.md`. It offers once to commit them as `artifacts/<slug>/for-qa.md` on the PR branch, where `/qa` reads them, and commits only on yes. It never pushes and never overwrites an existing For QA file.
+
 ## Install without the plugin system
 
 Copy `plugins/explain-diff/skills/explain-diff/` into `~/.claude/skills/` for yourself, or into `.claude/skills/` in a project repository so everyone on that project gets it.
@@ -68,7 +76,7 @@ Copy `plugins/explain-diff/skills/explain-diff/` into `~/.claude/skills/` for yo
 
 ## Testing
 
-The `evals/` folder has checks for the pages this skill produces and for how it handles hostile input, such as a diff that contains a closing script tag or a commit message that tries to instruct the assistant. See [`evals/README.md`](evals/README.md) for how to run them and for the current run record.
+The `evals/` folder has checks for the pages this skill produces and for how it handles hostile input, such as a diff that contains a closing script tag or a commit message that tries to instruct the assistant. `evals/model/` runs the skill on fixture repositories and grades each should against a should-not, such as ranking sensitive paths high but never docs, asking once about REVIEW.md but never writing it itself, and explaining the change but never approving it. See [`evals/README.md`](evals/README.md) for how to run them and for the current run record.
 
 ## Feedback
 

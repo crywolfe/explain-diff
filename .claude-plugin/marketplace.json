@@ -10,7 +10,7 @@
     {
       "name": "explain-diff",
       "source": "./plugins/explain-diff",
-      "description": "Explains a code change, diff, branch, or pull request as one interactive HTML page with intent, visualizations, a linked code panel, and a quiz."
+      "description": "Explains a code change, diff, branch, or pull request as one interactive HTML page with intent, visualizations, a linked code panel, a review guide, and a quiz."
     }
   ]
 }

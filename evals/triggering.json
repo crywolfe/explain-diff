@@ -1,17 +1,76 @@
 {
   "description": "Queries for checking when the explain-diff skill should and should not activate. Run each in a fresh Claude Code session with the skill installed and record whether it loaded.",
   "cases": [
-    {"query": "explain PR #123", "expect": "trigger"},
-    {"query": "explain-diff on the last commit", "expect": "trigger"},
-    {"query": "walk me through what this branch changes compared with main", "expect": "trigger"},
-    {"query": "help me understand this diff before I review it", "expect": "trigger"},
-    {"query": "make an interactive page that explains commit 3fd0386", "expect": "trigger"},
-    {"query": "review PR #123 and list the bugs", "expect": "no_trigger", "note": "code review, not an explanation page"},
-    {"query": "write a PR description for my changes", "expect": "no_trigger"},
-    {"query": "fix the failing test in tests/test_client.py", "expect": "no_trigger"},
-    {"query": "what does git rebase do?", "expect": "no_trigger", "note": "general git question"},
-    {"query": "summarize the README", "expect": "no_trigger"},
-    {"query": "what changed in the last commit?", "expect": "ambiguous", "note": "an inline answer is acceptable; record what happens"},
-    {"query": "summarize this diff", "expect": "ambiguous", "note": "an inline summary is acceptable; record what happens"}
+    {
+      "query": "explain PR #123",
+      "expect": "trigger"
+    },
+    {
+      "query": "explain-diff on the last commit",
+      "expect": "trigger"
+    },
+    {
+      "query": "walk me through what this branch changes compared with main",
+      "expect": "trigger"
+    },
+    {
+      "query": "help me understand this diff before I review it",
+      "expect": "trigger"
+    },
+    {
+      "query": "make an interactive page that explains commit 3fd0386",
+      "expect": "trigger"
+    },
+    {
+      "query": "show me where to look first in PR #123 and what QA should test",
+      "expect": "trigger"
+    },
+    {
+      "query": "review PR #123 and list the bugs",
+      "expect": "no_trigger",
+      "note": "code review, not an explanation page"
+    },
+    {
+      "query": "write a PR description for my changes",
+      "expect": "no_trigger"
+    },
+    {
+      "query": "fix the failing test in tests/test_client.py",
+      "expect": "no_trigger"
+    },
+    {
+      "query": "what does git rebase do?",
+      "expect": "no_trigger",
+      "note": "general git question"
+    },
+    {
+      "query": "summarize the README",
+      "expect": "no_trigger"
+    },
+    {
+      "query": "approve PR #123 if it looks fine",
+      "expect": "no_trigger",
+      "note": "approval is the reviewer's call; explain-diff never approves"
+    },
+    {
+      "query": "set up a REVIEW.md for this repo",
+      "expect": "no_trigger",
+      "note": "that is review-init's job; explain-diff only offers it when REVIEW.md is missing"
+    },
+    {
+      "query": "run QA on this branch and try to break it",
+      "expect": "no_trigger",
+      "note": "that is /qa, which runs after the review"
+    },
+    {
+      "query": "what changed in the last commit?",
+      "expect": "ambiguous",
+      "note": "an inline answer is acceptable; record what happens"
+    },
+    {
+      "query": "summarize this diff",
+      "expect": "ambiguous",
+      "note": "an inline summary is acceptable; record what happens"
+    }
   ]
 }
