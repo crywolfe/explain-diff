@@ -58,9 +58,9 @@ The page is saved as `/tmp/YYYY-MM-DD-explanation-<slug>.html`, outside your rep
 
 ## Where it fits
 
-With the `dfw` plugins installed, explain-diff runs after `/dfw:pr-prep` opens the PR and before `/qa` and human approval.
+With the `/qa`, `/a11y` and `/pr-prep` skills installed, explain-diff runs after `/pr-prep` opens the PR and before `/qa` and human approval.
 
-- **REVIEW.md.** The skill reads the repo's `REVIEW.md` for sensitive paths, rules and skip paths. If there is none, it asks once whether to set one up. On yes it runs `/dfw:review-init`, which drafts REVIEW.md on its own branch for the tech lead to approve in a PR, then builds from the draft. If review-init is not installed it says so and builds on defaults, as it does on no.
+- **REVIEW.md.** The skill reads the repo's `REVIEW.md` for sensitive paths, rules and skip paths. If there is none, it asks once whether to set one up. On yes it runs a `review-init` skill when one is installed, which drafts REVIEW.md on its own branch for the tech lead to approve in a PR, then builds from the draft. If review-init is not installed it says so and builds on defaults, as it does on no.
 - **For QA.** The skill writes the cases QA should run, tied to the acceptance criteria, to `/tmp/YYYY-MM-DD-for-qa-<slug>.md`. It offers once to commit them as `artifacts/<slug>/for-qa.md` on the PR branch, where `/qa` reads them, and commits only on yes. It never pushes and never overwrites an existing For QA file.
 
 ## Install without the plugin system

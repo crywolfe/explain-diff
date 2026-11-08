@@ -58,7 +58,7 @@ A fixture passes when the validator passes and the page reflects the real change
 
 ### How a case runs
 
-1. `model/cases.py` builds a fixture repo with a bare `origin`, a `main` branch and a `change` branch holding the diff. Some cases add a `REVIEW.md`, a PR body, an existing `for-qa.md`, or a fake `/dfw:review-init` command.
+1. `model/cases.py` builds a fixture repo with a bare `origin`, a `main` branch and a `change` branch holding the diff. Some cases add a `REVIEW.md`, a PR body, an existing `for-qa.md`, or a fake `review-init` skill.
 2. The skill runs on the requested model with a PreToolUse tripwire hook (`model/tripwire.py`). The hook blocks and logs pushes, GitHub writes, reads outside the repo and the temp folder, and network calls. A `gh` shim logs every GitHub call.
 3. Two-turn cases (the missing REVIEW.md flow) resume the same session for the user's answer.
 4. The graders read the stream-json transcript, the tripwire and `gh` logs, the git state of the fixture, the page's `review-data` block, and the For QA file.
