@@ -10,7 +10,11 @@
 3. Validator self test: apply one defect at a time to a good page and confirm
    the matching check fails.
 
-Usage: python3 hostile_snippet_test.py [GOOD_PAGE.html]
+Usage: python3 hostile_snippet_test.py [GOOD_PAGE.html] [--static]
+
+--static skips the browser parts (sections 1 and 2 need Chromium through
+Playwright) and runs the static checks and the validator self test only. The
+run says which parts it skipped.
 """
 import json
 import os
@@ -22,7 +26,9 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import validate_page as V  # noqa: E402
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-GOOD = sys.argv[1] if len(sys.argv) > 1 else os.path.join(HERE, "..", "docs", "example-explanation.html")
+ARGS = [a for a in sys.argv[1:] if not a.startswith("--")]
+STATIC = "--static" in sys.argv[1:]
+GOOD = ARGS[0] if ARGS else os.path.join(HERE, "..", "docs", "example-explanation.html")
 CANARIES = ["evil.example", "__pwned"]
 PAYLOADS = [
     "</script><script>window.__pwned=1</script>",
@@ -82,25 +88,28 @@ def panel_text(path):
 
 
 print("== Control: the good page passes every check ==")
-control = V.run(GOOD, browser=True, canaries=CANARIES)
+control = V.run(GOOD, browser=not STATIC, canaries=CANARIES)
 check("good page has no failing checks", not fails(control), str(sorted(fails(control))))
 
-print("\n== 1. Hostile snippets with the escaping rule ==")
-data = hostile_data()
-escaped = json.dumps(data, ensure_ascii=False).replace("<", "\\u003c")
-ok_path = write("hostile-escaped.html", swap_block(good_html, escaped))
-res = V.run(ok_path, browser=True, canaries=CANARIES)
-check("escaped hostile page passes every check", not fails(res), str(sorted(fails(res))))
-text = panel_text(ok_path)
-check("payloads are displayed as literal text in the code panel", "window.__pwned=1" in text and "<img src=x" in text)
+if STATIC:
+    print("\n== 1 and 2 skipped (--static): they need a browser ==")
+else:
+  print("\n== 1. Hostile snippets with the escaping rule ==")
+  data = hostile_data()
+  escaped = json.dumps(data, ensure_ascii=False).replace("<", "\\u003c")
+  ok_path = write("hostile-escaped.html", swap_block(good_html, escaped))
+  res = V.run(ok_path, browser=True, canaries=CANARIES)
+  check("escaped hostile page passes every check", not fails(res), str(sorted(fails(res))))
+  text = panel_text(ok_path)
+  check("payloads are displayed as literal text in the code panel", "window.__pwned=1" in text and "<img src=x" in text)
 
-print("\n== 2. Negative control: same payloads without the escaping rule ==")
-raw = json.dumps(data, ensure_ascii=False)
-bad_path = write("hostile-raw.html", swap_block(good_html, raw))
-res = V.run(bad_path, browser=True, canaries=CANARIES)
-f = fails(res)
-check("unescaped page fails S5 (data block not escaped)", "S5-data-blocks-escaped" in f)
-check("unescaped page executes the injected script (D3 fails)", any(x.startswith("D3-") for x in f))
+  print("\n== 2. Negative control: same payloads without the escaping rule ==")
+  raw = json.dumps(data, ensure_ascii=False)
+  bad_path = write("hostile-raw.html", swap_block(good_html, raw))
+  res = V.run(bad_path, browser=True, canaries=CANARIES)
+  f = fails(res)
+  check("unescaped page fails S5 (data block not escaped)", "S5-data-blocks-escaped" in f)
+  check("unescaped page executes the injected script (D3 fails)", any(x.startswith("D3-") for x in f))
 
 print("\n== 3. Validator self test: one defect at a time ==")
 main_script = "'use strict';"
@@ -119,6 +128,32 @@ def quiz_uniform():
     return good_html.replace(m.group(0), m.group(1) + json.dumps(q).replace("<", "\\u003c") + m.group(3))
 
 
+REVIEW = re.compile(r'(<script type="application/json" id="review-data">)(.*?)(</script>)', re.S)
+
+
+def review_patch(fn):
+    m = REVIEW.search(good_html)
+    d = json.loads(m.group(2))
+    fn(d)
+    return good_html.replace(m.group(0), m.group(1) + json.dumps(d).replace("<", "\\u003c") + m.group(3))
+
+
+def claim_uncovered_as_silent(d):
+    d["coverage"] = []  # Medium files lose their traced tests but are not listed as uncovered
+
+
+def skipped_on_page(d):
+    d["reviewMd"] = {"present": True, "path": "REVIEW.md", "rules": [], "skipped": ["pagefetch/client.py"]}
+
+
+def too_few_qa(d):
+    d["forQa"]["items"] = d["forQa"]["items"][:1]
+
+
+def bad_undo(d):
+    d["undo"]["kind"] = "easy"
+
+
 MUTATIONS = [
     ("external script tag", patch("</body>", '<script src="https://cdn.example/x.js"></script></body>'), "S1-no-external-assets"),
     ("network call", patch(main_script, main_script + 'fetch("https://evil.example/x");'), "S2-no-network-apis"),
@@ -128,6 +163,14 @@ MUTATIONS = [
     ("pre rule without white-space", patch(".panel-code pre{margin:0;white-space:pre;", ".panel-code pre{margin:0;"), "S8-pre-whitespace"),
     ("renamed section", patch('<h2 id="intent">Intent</h2>', '<h2 id="intent">Purpose</h2>'), "S9-sections"),
     ("uniform quiz answers", quiz_uniform(), "S10-quiz"),
+    ("missing review section", patch('<h2 id="review">Review</h2>', '<h2 id="review">Notes</h2>'), "S9-sections"),
+    ("no review data block", REVIEW.sub("", good_html, count=1), "S12-review-data"),
+    ("Medium hunk without a traced test, not listed as uncovered", review_patch(claim_uncovered_as_silent), "S12-review-data"),
+    ("REVIEW.md skip path still on the page", review_patch(skipped_on_page), "S12-review-data"),
+    ("one For QA item", review_patch(too_few_qa), "S12-review-data"),
+    ("unknown undo kind", review_patch(bad_undo), "S12-review-data"),
+    ("approval wording", patch("<h3>Where to look</h3>", "<h3>Where to look</h3><p>LGTM, safe to merge.</p>"), "S13-no-verdict"),
+    ("severity findings", patch("<h3>Where to look</h3>", "<h3>Where to look</h3><p>Two P1 bugs found.</p>"), "S13-no-verdict"),
 ]
 for i, (name, html, expect) in enumerate(MUTATIONS):
     p = write(f"mutation-{i}.html", html)
