@@ -1,0 +1,200 @@
+# Evals for the explain-diff skill. See evals/README.md, "Continuous runs".
+#
+# pull_request       offline suites always; model evals when the skill or the model evals change
+# schedule (weekly)  model evals on all three models, to catch drift from model or Claude Code updates;
+#                    a miss opens or updates an issue labelled eval-regression, a pass closes it
+# workflow_dispatch  model evals on the models and cases you choose; alert is optional
+#
+# Model evals need the repository secret ANTHROPIC_API_KEY. They cost roughly $10 to $20 per model per full run.
+name: evals
+
+on:
+  pull_request:
+    paths:
+      - "plugins/**"
+      - "evals/**"
+      - "docs/example-explanation.html"
+      - ".github/workflows/evals.yml"
+  schedule:
+    - cron: "17 9 * * 1" # Mondays 09:17 UTC
+  workflow_dispatch:
+    inputs:
+      models:
+        description: "Comma list of haiku, sonnet, opus"
+        default: "haiku,sonnet,opus"
+      cases:
+        description: "Space separated case ids; empty runs every case"
+        default: ""
+      alert:
+        description: "Open or update the eval-regression issue on a miss, as the weekly run does"
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: evals-${{ github.event_name }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  offline:
+    name: Offline checks
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install Playwright and Chromium
+        run: |
+          pip install playwright==1.48.0
+          python -m playwright install --with-deps chromium
+      - name: Grader unit tests
+        run: python3 evals/model/test_graders.py
+      - name: Hostile snippets, validator self test, gate behavior
+        run: python3 evals/hostile_snippet_test.py
+      - name: Example page passes the validator
+        run: python3 evals/validate_page.py docs/example-explanation.html --browser --canary evil.example --canary __pwned
+      - name: Every model eval fixture builds clean
+        run: python3 evals/model/run.py --dry-run --all --out "$RUNNER_TEMP/dry"
+
+  plan:
+    name: Plan model evals
+    runs-on: ubuntu-latest
+    outputs:
+      run: ${{ steps.plan.outputs.run }}
+      models: ${{ steps.plan.outputs.models }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - id: plan
+        env:
+          EVENT: ${{ github.event_name }}
+          MODELS_INPUT: ${{ inputs.models }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_REPO: ${{ github.event.pull_request.head.repo.full_name }}
+          REPO: ${{ github.repository }}
+          HAS_KEY: ${{ secrets.ANTHROPIC_API_KEY != '' }}
+        run: |
+          models="haiku,sonnet,opus"
+          [ "$EVENT" = "workflow_dispatch" ] && [ -n "$MODELS_INPUT" ] && models="$MODELS_INPUT"
+          run=true
+          if [ "$EVENT" = "pull_request" ]; then
+            if [ "$HEAD_REPO" != "$REPO" ]; then
+              echo "::notice::Model evals skipped: pull requests from forks get no secrets."
+              run=false
+            elif ! git diff --name-only "$BASE_SHA" HEAD | grep -qE '^(plugins/|evals/model/|evals/validate_page\.py)'; then
+              echo "::notice::Model evals skipped: the skill and the model evals are unchanged."
+              run=false
+            fi
+          fi
+          if [ "$run" = true ] && [ "$HAS_KEY" != true ]; then
+            echo "::error::Model evals need the repository secret ANTHROPIC_API_KEY."
+            exit 1
+          fi
+          json=$(python3 -c 'import json,sys; print(json.dumps([m.strip() for m in sys.argv[1].split(",") if m.strip()]))' "$models")
+          echo "run=$run" >> "$GITHUB_OUTPUT"
+          echo "models=$json" >> "$GITHUB_OUTPUT"
+
+  model:
+    name: Model evals (${{ matrix.model }})
+    needs: [offline, plan]
+    if: ${{ !cancelled() && needs.offline.result == 'success' && needs.plan.outputs.run == 'true' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 240
+    strategy:
+      fail-fast: false
+      matrix:
+        model: ${{ fromJSON(needs.plan.outputs.models) }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+      # Unpinned on purpose: the weekly run exists to catch changes in Claude Code as well as in the models.
+      - name: Install Claude Code
+        run: npm install -g @anthropic-ai/claude-code
+      - name: Run the model evals
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          MODEL: ${{ matrix.model }}
+          CASES: ${{ inputs.cases }}
+        run: |
+          args=()
+          if [ -n "$CASES" ]; then for c in $CASES; do args+=(--case "$c"); done; else args+=(--all); fi
+          python3 evals/model/run.py --model "$MODEL" "${args[@]}" --parallel 4 --out "evals/model/results/ci-$MODEL"
+      - name: Write the summary
+        if: ${{ !cancelled() }}
+        env:
+          MODEL: ${{ matrix.model }}
+        run: |
+          f="evals/model/results/ci-$MODEL/summary.md"
+          if [ -f "$f" ]; then cat "$f" >> "$GITHUB_STEP_SUMMARY"; else echo "No summary for $MODEL: the run did not finish." >> "$GITHUB_STEP_SUMMARY"; fi
+      - uses: actions/upload-artifact@v4
+        if: ${{ !cancelled() }}
+        with:
+          name: eval-${{ matrix.model }}
+          path: evals/model/results/ci-${{ matrix.model }}
+          retention-days: 30
+          if-no-files-found: warn
+
+  alert:
+    name: Alert on a miss
+    needs: [plan, model]
+    if: ${{ !cancelled() && needs.plan.outputs.run == 'true' && (github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && inputs.alert)) }}
+    runs-on: ubuntu-latest
+    permissions:
+      issues: write
+      actions: read
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: eval-*
+          path: results
+      - uses: actions/github-script@v7
+        env:
+          MODEL_RESULT: ${{ needs.model.result }}
+          MODELS: ${{ needs.plan.outputs.models }}
+        with:
+          script: |
+            const fs = require('fs');
+            const path = require('path');
+            const { owner, repo } = context.repo;
+            const label = 'eval-regression';
+            const runUrl = `${context.serverUrl}/${owner}/${repo}/actions/runs/${context.runId}`;
+            const models = JSON.parse(process.env.MODELS);
+            const lines = [];
+            let missed = process.env.MODEL_RESULT !== 'success';
+            for (const m of models) {
+              const dir = path.join('results', `eval-${m}`);
+              const vf = path.join(dir, 'verdict.json');
+              if (!fs.existsSync(vf)) { missed = true; lines.push(`- **${m}**: the run did not finish; no verdict.`); continue; }
+              for (const [id, v] of Object.entries(JSON.parse(fs.readFileSync(vf, 'utf8')))) {
+                if (!v.meets) missed = true;
+                lines.push(`- **${m}** (${id}): ${v.passed} of ${v.cases} cases pass, bar ${v.need}; ${v.meets ? 'meets' : '**misses**'}.`
+                  + (v.global_failures.length ? ` Global should-not failures: ${v.global_failures.join(', ')}.` : '')
+                  + (v.failed_cases.length ? ` Failed: ${v.failed_cases.join(', ')}.` : '') + ` Cost $${v.cost}.`);
+              }
+            }
+            const footer = `\n\nRun: ${runUrl}\nRecords and generated pages are in the run's artifacts. Triage: evals/README.md, "When a run misses".\n\n---\n_Opened by the evals workflow._`;
+            try { await github.rest.issues.getLabel({ owner, repo, name: label }); }
+            catch (e) { await github.rest.issues.createLabel({ owner, repo, name: label, color: 'd73a4a', description: 'explain-diff model evals missed their bar' }); }
+            const open = (await github.rest.issues.listForRepo({ owner, repo, labels: label, state: 'open', per_page: 1 })).data[0];
+            const body = lines.join('\n') + footer;
+            if (missed) {
+              if (open) {
+                await github.rest.issues.createComment({ owner, repo, issue_number: open.number, body: `Still missing:\n\n${body}` });
+              } else {
+                await github.rest.issues.create({ owner, repo, labels: [label], title: 'explain-diff model evals missed their bar', body });
+              }
+              core.setFailed('Model evals missed their bar.');
+            } else if (open) {
+              await github.rest.issues.createComment({ owner, repo, issue_number: open.number, body: `Passing again:\n\n${body}` });
+              await github.rest.issues.update({ owner, repo, issue_number: open.number, state: 'closed', state_reason: 'completed' });
+            }

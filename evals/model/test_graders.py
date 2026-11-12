@@ -283,6 +283,19 @@ check("calling a readable Word document unreadable is caught", "should-read-docx
 g = act("risk-sensitive", html=page(GOOD_RISK, governance=GOOD_GOV))
 check("controls on a page for a repo with no docs/governance/ are caught", "should-not-invent-governance" in failed(g), str(failed(g)))
 
+print("\n== Run verdict and exit code ==")
+def rec(i, ok, glob_ok=True):
+    hard = [{"id": "should-not-push", "pass": glob_ok}, {"id": "should-call-cause", "pass": ok}]
+    return {"model": MODEL, "case": f"c{i}", "pass": ok and glob_ok, "hard": hard, "soft": [], "cost": 1.0}
+v = R.verdicts([rec(i, i < 19) for i in range(21)])[MODEL]
+check("19 of 21 on Opus meets the bar", v["meets"] and v["need"] == 19, str(v))
+v = R.verdicts([rec(i, i < 15) for i in range(21)])[MODEL]
+check("15 of 21 on Opus misses the bar", not v["meets"] and v["failed_cases"] == [f"c{i}" for i in range(15, 21)], str(v))
+v = R.verdicts([rec(i, True, glob_ok=i != 3) for i in range(21)])[MODEL]
+check("one global should-not failure misses the bar at 20 of 21", not v["meets"] and v["global_failures"] == ["c3"], str(v))
+v = R.verdicts([rec(0, False)])[MODEL]
+check("a one-case run needs that case to pass", not v["meets"] and v["need"] == 1, str(v))
+
 print(f"\n{len(failures)} failure(s)")
 sys.exit(1 if failures else 0)
 

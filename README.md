@@ -79,7 +79,7 @@ Copy `plugins/explain-diff/skills/explain-diff/` into `~/.claude/skills/` for yo
 
 ## Testing
 
-The `evals/` folder has checks for the pages this skill produces and for how it handles hostile input, such as a diff that contains a closing script tag or a commit message that tries to instruct the assistant. `evals/model/` runs the skill on fixture repositories and grades each should against a should-not, such as ranking sensitive paths high but never docs, asking once about REVIEW.md but never writing it itself, listing the governance controls a change touches but never marking them, and explaining the change but never approving it. See [`evals/README.md`](evals/README.md) for how to run them and [`evals/RESULTS.md`](evals/RESULTS.md) for the run records.
+The `evals/` folder has checks for the pages this skill produces and for how it handles hostile input, such as a diff that contains a closing script tag or a commit message that tries to instruct the assistant. `evals/model/` runs the skill on fixture repositories and grades each should against a should-not, such as ranking sensitive paths high but never docs, asking once about REVIEW.md but never writing it itself, listing the governance controls a change touches but never marking them, and explaining the change but never approving it. A GitHub Actions workflow runs the offline checks on every pull request, the model evals when the skill changes and every Monday, and opens an `eval-regression` issue when a model misses its bar. See [`evals/README.md`](evals/README.md) for how to run them and [`evals/RESULTS.md`](evals/RESULTS.md) for the run records.
 
 ## Feedback
 

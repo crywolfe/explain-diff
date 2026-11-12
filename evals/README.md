@@ -109,6 +109,7 @@ python3 evals/model/test_graders.py                     # grader unit tests, off
 python3 evals/model/run.py --dry-run --all              # builds every fixture and grades a stub run, offline
 python3 evals/model/run.py --model opus --case risk-sensitive
 python3 evals/model/run.py --model opus,sonnet,haiku --all --parallel 4
+python3 evals/model/run.py --model opus --all --out /tmp/opus-run   # results folder of your choice
 ```
 
 Results land in `evals/model/results/<timestamp>/` (ignored by git): one JSON record and log folder per case and model, the generated pages and For QA files, and `summary.md`.
@@ -118,6 +119,36 @@ Results land in `evals/model/results/<timestamp>/` (ignored by git): one JSON re
 `claude plugin eval` can run plugin suites, but it has no custom-code graders: checks must be `regex`, `tool_used`, `tool_order`, `file_exists`, or `llm` graders, and multi-turn runs resume from a recorded transcript (`context.history_file`). Fixture repos would be built by a `context.scaffold_script` run with `--scaffold`. Most should-nots map to `tool_used` with a maximum of 0; the checks on `review-data` contents and git state do not map without an LLM grader. This suite stays in Python for that reason. See Anthropic's "Test plugins with evals" page for the format.
 
 Promptfoo can call `run.py` per case through an `exec:` provider and assert on the JSON record it prints. That is not set up here.
+
+## Continuous runs
+
+`.github/workflows/evals.yml` runs the suites in GitHub Actions:
+
+| Trigger | What runs | Cost |
+| --- | --- | --- |
+| Pull request touching `plugins/`, `evals/`, or the example page | Offline checks: grader tests, hostile snippets and validator self test, the example page in a browser, a dry run of every fixture | Free |
+| The same pull request, when it changes `plugins/`, `evals/model/`, or `validate_page.py` | Model evals, every case, one job per model | About $10 to $20 per model |
+| Mondays 09:17 UTC | Model evals on all three models | About $30 to $60 |
+| Manual (Actions, evals, Run workflow) | Model evals on the models and cases you name; `alert` makes a miss open the issue | Depends on the selection |
+
+The weekly run catches drift: a new model snapshot or Claude Code release can change behavior when the skill has not changed. The model evals do not run before each use of the skill; `validate_page.py` checks each generated page instead.
+
+**Setup.** Add the repository secret `ANTHROPIC_API_KEY`. To block merges on a miss, make the `Offline checks` and `Model evals (...)` checks required in the branch ruleset. A model job that is skipped (the skill did not change) counts as passing. Pull requests from forks get no secrets, so their model evals are skipped with a notice.
+
+**Exit code.** `run.py` exits 1 when a model misses its bar or has any global should-not failure, and 0 otherwise. A case that fails above the bar shows in `summary.md` but does not fail the job. `--strict` exits 1 on any failed case. Each run writes `summary.md` and `verdict.json` to its results folder (`--out`).
+
+**Alerts.** When the weekly run misses the bar on any model, or a model job does not finish, the workflow opens an issue labelled `eval-regression` with the per model counts, the failed cases, and a link to the run, and the run fails. A later miss comments on the open issue; a later pass comments and closes it. GitHub notifies watchers of the repository about the new issue. On pull requests the failing check is the alert. The job summary shows `summary.md` for each model, and the records and generated pages are kept as artifacts for 30 days.
+
+## When a run misses
+
+1. Download the run's artifacts and read `summary.md`, then the JSON record of each failed case. Every failed hard check names itself and gives a detail line.
+2. Sort each failure:
+   - **Skill regression:** the page or the transcript shows the model doing what the check forbids. Fix `SKILL.md`, then rerun the failed cases on every model.
+   - **Grader false positive:** the behavior is right and the grader misread it. Fix the grader and add a case to `test_graders.py`, as on Nov 8.
+   - **Variance:** the case passes on a rerun with no change. Each case runs once, so one run can be noise. Note it in RESULTS.md; if the same case flips often, raise it as a skill clarity issue.
+   - **Environment:** the job timed out, the budget ran out, or the API failed. Rerun.
+3. Rerun only the failed cases from Actions (Run workflow, `cases`), then record the outcome in RESULTS.md.
+4. Do not lower the bar to get a pass.
 
 ## Run records
 
