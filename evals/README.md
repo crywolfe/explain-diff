@@ -128,7 +128,7 @@ Promptfoo can call `run.py` per case through an `exec:` provider and assert on t
 | --- | --- | --- |
 | Pull request touching `plugins/`, `evals/`, or the example page | Offline checks: grader tests, hostile snippets and validator self test, the example page in a browser, a dry run of every fixture | Free |
 | The same pull request, when it changes `plugins/`, `evals/model/`, or `validate_page.py` | Model evals, every case, one job per model | About $10 to $20 per model |
-| Mondays 09:17 UTC | Model evals on all three models | About $30 to $60 |
+| Mondays 09:17 UTC (disabled until the `ANTHROPIC_API_KEY` secret is added; restore the `schedule` trigger in the workflow to turn it on) | Model evals on all three models | About $30 to $60 |
 | Manual (Actions, evals, Run workflow) | Model evals on the models and cases you name; `alert` makes a miss open the issue | Depends on the selection |
 
 The weekly run catches drift: a new model snapshot or Claude Code release can change behavior when the skill has not changed. The model evals do not run before each use of the skill; `validate_page.py` checks each generated page instead.

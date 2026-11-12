@@ -1,7 +1,8 @@
 # Evals for the explain-diff skill. See evals/README.md, "Continuous runs".
 #
 # pull_request       offline suites always; model evals when the skill or the model evals change
-# schedule (weekly)  model evals on all three models, to catch drift from model or Claude Code updates;
+# schedule           DISABLED until the ANTHROPIC_API_KEY secret is added. To turn it on, restore the
+#                    schedule trigger below. The weekly run catches drift from model or Claude Code updates;
 #                    a miss opens or updates an issue labelled eval-regression, a pass closes it
 # workflow_dispatch  model evals on the models and cases you choose; alert is optional
 #
@@ -15,8 +16,9 @@ on:
       - "evals/**"
       - "docs/example-explanation.html"
       - ".github/workflows/evals.yml"
-  schedule:
-    - cron: "17 9 * * 1" # Mondays 09:17 UTC
+  # Weekly run, disabled until ANTHROPIC_API_KEY is set. Restore these two lines to turn it back on:
+  # schedule:
+  #   - cron: "17 9 * * 1" # Mondays 09:17 UTC
   workflow_dispatch:
     inputs:
       models:
