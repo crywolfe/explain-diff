@@ -76,7 +76,7 @@ def swap_block(html, json_text):
 def panel_text(path):
     from playwright.sync_api import sync_playwright
     with sync_playwright() as pw:
-        b = pw.chromium.launch()
+        b = V.launch(pw)
         pg = b.new_page(viewport={"width": 1400, "height": 900})
         pg.goto("file://" + os.path.abspath(path))
         pg.wait_for_timeout(200)
@@ -154,6 +154,28 @@ def bad_undo(d):
     d["undo"]["kind"] = "easy"
 
 
+GOVERNANCE = re.compile(r'(<script type="application/json" id="governance-data">)(.*?)(</script>)', re.S)
+
+
+def governance_patch(fn):
+    m = GOVERNANCE.search(good_html)
+    d = json.loads(m.group(2))
+    fn(d)
+    return good_html.replace(m.group(0), m.group(1) + json.dumps(d).replace("<", "\\u003c") + m.group(3))
+
+
+def premarked(d):
+    d["controls"][0]["result"] = "met"
+
+
+def outside_folder(d):
+    d["documents"][0]["path"] = "GOVERNANCE.md"
+
+
+def bad_format(d):
+    d["documents"][0]["format"] = "xlsx"
+
+
 MUTATIONS = [
     ("external script tag", patch("</body>", '<script src="https://cdn.example/x.js"></script></body>'), "S1-no-external-assets"),
     ("network call", patch(main_script, main_script + 'fetch("https://evil.example/x");'), "S2-no-network-apis"),
@@ -171,11 +193,38 @@ MUTATIONS = [
     ("unknown undo kind", review_patch(bad_undo), "S12-review-data"),
     ("approval wording", patch("<h3>Where to look</h3>", "<h3>Where to look</h3><p>LGTM, safe to merge.</p>"), "S13-no-verdict"),
     ("severity findings", patch("<h3>Where to look</h3>", "<h3>Where to look</h3><p>Two P1 bugs found.</p>"), "S13-no-verdict"),
+    ("missing governance section", patch('<h2 id="governance">Governance</h2>', '<h2 id="governance">Policy</h2>'), "S9-sections"),
+    ("missing gate section", patch('<h2 id="gate">Gate</h2>', '<h2 id="gate">Approval</h2>'), "S9-sections"),
+    ("no governance data block", GOVERNANCE.sub("", good_html, count=1), "S14-governance-data"),
+    ("governance control carries a result", governance_patch(premarked), "S14-governance-data"),
+    ("governance button pressed on load", patch('data-result="met" aria-pressed="false"', 'data-result="met" aria-pressed="true"'), "S14-governance-data"),
+    ("governance document outside docs/governance/", governance_patch(outside_folder), "S14-governance-data"),
+    ("governance document in an unsupported format", governance_patch(bad_format), "S14-governance-data"),
+    ("page says governance passed", patch("<h3>Where to look</h3>", "<h3>Where to look</h3><p>Governance passed.</p>"), "S14-governance-data"),
+    ("gate markup starts passed", patch('id="gate-status" data-state="blocked"', 'id="gate-status" data-state="passed"'), "S15-gate"),
+    ("no Retake quiz button", patch('id="quiz-reset"', 'id="quiz-again"'), "S15-gate"),
+    ("no gate data block", re.sub(r'<script type="application/json" id="gate-data">.*?</script>', "", good_html, count=1, flags=re.S), "S15-gate"),
 ]
 for i, (name, html, expect) in enumerate(MUTATIONS):
     p = write(f"mutation-{i}.html", html)
     res = V.run(p, browser=False, canaries=CANARIES)
     check(f"defect '{name}' is caught by {expect}", expect in fails(res), str(sorted(fails(res))))
+
+if STATIC:
+    print("\n== 4 skipped (--static): gate behavior needs a browser ==")
+else:
+    print("\n== 4. Gate behavior: one defect at a time, browser ==")
+    GATE_MUTATIONS = [
+        ("gate ignores wrong quiz answers", patch("state=(q.wrong>0||notmet.length)?'failed'", "state=(notmet.length)?'failed'")),
+        ("gate ignores unmarked controls", patch("(g.present&&marked.length<g.controls.length))?'blocked'", "false)?'blocked'")),
+        ("Retake keeps old answers", patch("function retake(){attempt++;render(true);", "function retake(){attempt++;")),
+        ("a question can be answered twice", patch("if(answers[qi]!==null)return;\n     Object.keys(btns).forEach(function(k){btns[k].disabled=true});",
+                                                    "Object.keys(btns).forEach(function(k){btns[k].disabled=false});")),
+    ]
+    for i, (name, html) in enumerate(GATE_MUTATIONS):
+        p = write(f"gate-mutation-{i}.html", html)
+        res = V.run(p, browser=True, canaries=CANARIES)
+        check(f"defect '{name}' is caught by D6-gate", "D6-gate" in fails(res), str(sorted(fails(res))))
 
 print(f"\n{len(failures)} failure(s). Files written to {tmp}")
 sys.exit(1 if failures else 0)

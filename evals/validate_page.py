@@ -8,6 +8,8 @@ reference, and watch for script execution, errors, and layout overflow.
 Usage:
   python3 validate_page.py PAGE.html [--browser] [--canary STRING ...]
 
+Set CHROMIUM_PATH to use a Chromium binary other than the one Playwright downloaded.
+
 Exit code 0 when no check fails. Warnings do not fail the run.
 """
 import argparse
@@ -21,7 +23,11 @@ NET_APIS = re.compile(r"(\bfetch\s*\(|XMLHttpRequest|\bWebSocket\b|\bEventSource
 # innerHTML = "" only clears a container, so it is allowed; any other innerHTML write is a sink.
 SINKS = re.compile(r"(\.innerHTML\s*(?:\+)?=(?!=)(?!\s*(?:''|\"\"|``)\s*[;,)}\n])|\.outerHTML\s*(?:\+)?=(?!=)|insertAdjacentHTML|document\.write\s*\(|\beval\s*\(|new\s+Function\s*\()")
 URL_ATTRS = {"src", "href", "action", "poster", "data", "formaction", "srcset", "xlink:href"}
-SECTIONS = ["Background", "Intent", "Review", "Intuition", "Code", "Quiz"]
+SECTIONS = ["Background", "Intent", "Review", "Governance", "Intuition", "Code", "Quiz", "Gate"]
+MARKS = {"met", "notmet", "na"}
+GOV_FORMATS = {"md", "pdf", "docx"}
+# Words that would mean the page, not the reviewer, decided a control.
+GOV_VERDICT = re.compile(r"\bgovernance (?:passed|is (?:met|clear(?:ed)?|satisfied))\b|\ball (?:governance )?controls (?:are )?(?:met|pass(?:ed)?)\b", re.I)
 RISKS = {"high", "medium", "low"}
 UNDO_KINDS = {"flag", "revert", "careful", "irreversible"}
 VERDICTS = {"cause", "symptom", "unclear"}
@@ -48,12 +54,13 @@ def verdict_words(text):
 class Page(HTMLParser):
     def __init__(self):
         super().__init__(convert_charrefs=True)
-        self.scripts, self.styles, self.attrs, self.h2 = [], [], [], []
+        self.scripts, self.styles, self.attrs, self.h2, self.tags = [], [], [], [], []
         self._cur, self._in_h2, self._h2, self._in_btn = None, False, "", 0
 
     def handle_starttag(self, tag, attrs):
         for k, v in attrs:
             self.attrs.append((tag, k, v or ""))
+        self.tags.append(dict((k, v or "") for k, v in attrs))
         if tag == "script":
             self._cur = {"attrs": dict(attrs), "text": "", "kind": "script"}
         elif tag == "style":
@@ -83,11 +90,18 @@ class Page(HTMLParser):
             self._h2 += data
 
 
+def launch(pw):
+    exe = os.environ.get("CHROMIUM_PATH")
+    return pw.chromium.launch(executable_path=exe) if exe else pw.chromium.launch()
+
+
 def walk_refs(obj, out):
     if isinstance(obj, dict):
         for k, v in obj.items():
             if k == "ref" and isinstance(v, str):
                 out.add(v)
+            elif k == "refs" and isinstance(v, list):
+                out.update(x for x in v if isinstance(x, str))
             else:
                 walk_refs(v, out)
     elif isinstance(obj, list):
@@ -105,12 +119,16 @@ def static_checks(path, canaries):
     p = Page()
     p.feed(src)
     json_blocks, code_scripts = [], []
-    review = None
+    review = governance = gate = None
     for s in p.scripts:
         t = (s["attrs"].get("type") or "").lower()
         (json_blocks if t == "application/json" else code_scripts).append(s)
         if t == "application/json" and s["attrs"].get("id") == "review-data":
             review = s
+        if t == "application/json" and s["attrs"].get("id") == "governance-data":
+            governance = s
+        if t == "application/json" and s["attrs"].get("id") == "gate-data":
+            gate = s
 
     # S1 external dependencies
     ext = []
@@ -185,6 +203,12 @@ def static_checks(path, canaries):
     text = re.sub(r"<script[\s\S]*?</script>|<style[\s\S]*?</style>|<[^>]+>", " ", src)
     words = verdict_words(text)
     add("S13-no-verdict", "FAIL" if words else "PASS", ", ".join(words) or "none found")
+
+    # S14 governance data: controls listed for the reviewer, none marked by the page
+    add("S14-governance-data", *governance_checks(governance, snippets, p.attrs, text, p.tags))
+
+    # S15 the gate exists, starts blocked, and has its data block
+    add("S15-gate", *gate_checks(gate, p.attrs))
 
     # S10 quiz shape, when the data is statically visible
     quiz = None
@@ -292,13 +316,149 @@ def review_checks(block, snippets):
     return ("FAIL" if msgs else "PASS"), ("; ".join(msgs) or f"{len(rows)} ranked, {len(items)} For QA items")
 
 
+def governance_checks(block, snippets, attrs, text, tags=()):
+    """Returns (level, message) for the governance-data block and the control cards."""
+    if block is None:
+        return "FAIL", "no governance-data block"
+    try:
+        d = json.loads(block["text"])
+    except Exception as e:
+        return "FAIL", f"governance-data does not parse: {e}"
+    msgs = []
+    controls = d.get("controls") or []
+    if d.get("present"):
+        docs = d.get("documents") or []
+        if not docs:
+            msgs.append("present but no documents listed")
+        for doc in docs:
+            if not str(doc.get("path", "")).startswith("docs/governance/"):
+                msgs.append(f"document outside docs/governance/: {doc.get('path')}")
+            if doc.get("format") not in GOV_FORMATS:
+                msgs.append(f"bad format {doc.get('format')!r} for {doc.get('path')}")
+        for c in controls:
+            for k in ("id", "requirement", "source"):
+                if not c.get(k):
+                    msgs.append(f"control {c.get('id')} has no {k}")
+            if not c.get("files") and not str(c.get("id", "")).startswith("DOC-"):
+                msgs.append(f"control {c.get('id')} has no files")
+            for k in ("result", "status", "mark", "marked", "met", "passed", "verdict"):
+                if k in c:
+                    msgs.append(f"control {c.get('id')} carries {k!r}: the reviewer marks controls, not the page")
+    elif controls:
+        msgs.append("controls listed with present false")
+    cards = {v for t, k, v in attrs if k == "data-control"}
+    ids = {c.get("id") for c in controls}
+    if ids - cards:
+        msgs.append(f"controls with no card: {sorted(ids - cards)}")
+    results = [v for t, k, v in attrs if k == "data-result"]
+    if results and len(results) < 3 * len(ids):
+        msgs.append("a control card lacks its Met, Not met, and Does not apply buttons")
+    if any(t.get("data-result") in MARKS and t.get("aria-pressed") == "true" for t in tags):
+        msgs.append("a governance button is pressed on load")
+    said = sorted(set(m.group(0) for m in GOV_VERDICT.finditer(QUOTED.sub(" ", text))))
+    if said:
+        msgs.append(f"governance verdict in the page's voice: {said}")
+    return ("FAIL" if msgs else "PASS"), ("; ".join(msgs) or f"{len(controls)} control(s), none marked")
+
+
+def gate_checks(block, attrs):
+    msgs = []
+    if block is None:
+        msgs.append("no gate-data block")
+    else:
+        try:
+            d = json.loads(block["text"])
+            if not d.get("commit"):
+                msgs.append("gate-data has no commit")
+        except Exception as e:
+            msgs.append(f"gate-data does not parse: {e}")
+    ids = {v for t, k, v in attrs if k == "id"}
+    for need in ("gate-status", "quiz-reset", "gov-reset", "remediate", "gate-attestation"):
+        if need not in ids:
+            msgs.append(f"no #{need}")
+    states = [v for t, k, v in attrs if k == "data-state"]
+    if "gate-status" in ids and "blocked" not in states:
+        msgs.append("gate does not start blocked")
+    if any(v == "passed" for v in states):
+        msgs.append("gate markup starts passed")
+    return ("FAIL" if msgs else "PASS"), ("; ".join(msgs) or "gate starts blocked")
+
+
+GATE_JS = """(cmd)=>{
+ const Q=JSON.parse(document.getElementById('quiz-data').textContent);
+ const state=()=>document.getElementById('gate-status').dataset.state;
+ const click=e=>e.dispatchEvent(new MouseEvent('click',{bubbles:true}));
+ const answer=(right)=>{document.querySelectorAll('#quiz-host .q').forEach((card,qi)=>{
+   const q=Q[qi],want=q.options[q.correct];
+   const opts=[...card.querySelectorAll('.opt')];
+   const b=right(qi)?opts.find(o=>o.textContent===want):opts.find(o=>o.textContent!==want);
+   if(b)click(b)})};
+ const mark=(r)=>document.querySelectorAll('.gov-control').forEach((c,i)=>{const b=c.querySelector('[data-result="'+r(i)+'"]');if(b)click(b)});
+ const out={};
+ out.load=state();
+ out.pressedOnLoad=document.querySelectorAll('.gov-control [aria-pressed="true"]').length;
+ out.controls=document.querySelectorAll('.gov-control').length;
+ answer(()=>true); out.quizOnly=state();
+ mark(()=> 'met'); out.allGood=state();
+ out.attestation=document.getElementById('gate-attestation').value;
+ click(document.getElementById('quiz-reset')); out.afterRetake=state();
+ out.unanswered=[...document.querySelectorAll('#quiz-host .opt')].filter(o=>o.disabled).length;
+ answer(qi=>qi!==0); out.oneWrong=state();
+ { const card=document.querySelector('#quiz-host .q'),want=Q[0].options[Q[0].correct];
+   const b=[...card.querySelectorAll('.opt')].find(o=>o.textContent===want); b.disabled=false; click(b); out.secondTry=state(); }
+ click(document.getElementById('quiz-reset')); answer(()=>true); out.retakeRight=state();
+ if(out.controls){mark(i=>i===0?'notmet':'met'); out.notMet=state();
+  out.remediateShown=!document.getElementById('remediate').hidden;
+  click(document.getElementById('gov-reset')); out.afterGovReset=state();}
+ return out}"""
+
+
+def gate_dynamic(pg):
+    """Drives the quiz and governance marks and checks every gate state."""
+    o = pg.evaluate(GATE_JS)
+    msgs = []
+    if o["load"] != "blocked":
+        msgs.append(f"loads {o['load']}")
+    if o["pressedOnLoad"]:
+        msgs.append(f"{o['pressedOnLoad']} governance button(s) pressed on load")
+    if o["controls"] and o["quizOnly"] != "blocked":
+        msgs.append(f"quiz alone gives {o['quizOnly']} with controls unmarked")
+    if o["allGood"] != "passed":
+        msgs.append(f"all right and all Met gives {o['allGood']}")
+    else:
+        try:
+            a = json.loads(o["attestation"])
+            if a.get("quiz", {}).get("correct") != 5 or a.get("source") != "explain-diff":
+                msgs.append("attestation lacks the quiz score or source")
+        except ValueError:
+            msgs.append("no attestation JSON when passed")
+    if o["afterRetake"] != "blocked":
+        msgs.append(f"Retake gives {o['afterRetake']}")
+    if o["unanswered"]:
+        msgs.append("options still disabled after Retake")
+    if o["oneWrong"] != "failed":
+        msgs.append(f"one wrong answer gives {o['oneWrong']}")
+    if o["secondTry"] != "failed":
+        msgs.append(f"answering a locked question again gives {o['secondTry']}")
+    if o["retakeRight"] != "passed":
+        msgs.append(f"a right retake gives {o['retakeRight']}")
+    if o["controls"]:
+        if o["notMet"] != "failed":
+            msgs.append(f"a Not met control gives {o['notMet']}")
+        if not o["remediateShown"]:
+            msgs.append("Remediation hidden with a Not met control")
+        if o["afterGovReset"] != "blocked":
+            msgs.append(f"Reset governance gives {o['afterGovReset']}")
+    return ("FAIL" if msgs else "PASS"), ("; ".join(msgs) or f"blocked, passed, retake, failed, remediation all behave ({o['controls']} controls)")
+
+
 def dynamic_checks(path, canaries):
     from playwright.sync_api import sync_playwright
 
     res = []
     abspath = os.path.abspath(path)
     with sync_playwright() as pw:
-        browser = pw.chromium.launch()
+        browser = launch(pw)
         for width, height in ((1400, 900), (390, 844)):
             tag = f"{width}px"
             ctx = browser.new_context(viewport={"width": width, "height": height})
@@ -334,6 +494,12 @@ def dynamic_checks(path, canaries):
             if width >= 900:
                 ok = panel and panel["w"] >= 300 and panel["h"] >= 300
                 res.append((f"D5-code-panel-present-{tag}", "PASS" if ok else "FAIL", str(panel)))
+                pg.reload()
+                pg.wait_for_timeout(200)
+                try:
+                    res.append(("D6-gate", *gate_dynamic(pg)))
+                except Exception as e:
+                    res.append(("D6-gate", "FAIL", f"gate could not be driven: {str(e)[:200]}"))
             ctx.close()
         browser.close()
     return res

@@ -9,8 +9,11 @@ Usage (from the repository root):
 Each run costs money: it calls the model through `claude -p`. Models run one after another. Cases for one model run in parallel,
 except cases whose fixtures share a commit message (and so a /tmp file name), which run in order.
 
-Pass thresholds (per model): every global should-not check passes on every case; at least 15 of 17
-cases pass every hard check on Sonnet and Opus, and at least 13 of 17 on Haiku; soft checks are
+Exit code: 0 when every model meets its bar, 1 when any model misses it (or, with --strict, when any case
+fails). summary.md and verdict.json in the results folder (--out) say which.
+
+Pass thresholds (per model): every global should-not check passes on every case; at least 19 of 21
+cases pass every hard check on Sonnet and Opus, and at least 16 of 21 on Haiku; soft checks are
 reported, with 80% as the target.
 """
 import argparse
@@ -33,7 +36,7 @@ import cases as C  # noqa: E402
 import graders as G  # noqa: E402
 
 MODELS = {"haiku": "claude-haiku-5-5", "sonnet": "claude-sonnet-5-5", "opus": "claude-opus-5-5"}
-THRESHOLDS = {"claude-haiku-5-5": 13, "claude-sonnet-5-5": 15, "claude-opus-5-5": 15}
+THRESHOLDS = {"claude-haiku-5-5": 16, "claude-sonnet-5-5": 19, "claude-opus-5-5": 19}
 ALLOWED_TOOLS = ["Bash", "Read", "Write", "Edit", "Glob", "Grep", "Skill", "Task", "TodoWrite"]
 
 GH_SHIM = r'''#!/usr/bin/env python3
@@ -63,7 +66,10 @@ def write(root, files):
     for rel, text in files.items():
         p = os.path.join(root, rel)
         os.makedirs(os.path.dirname(p), exist_ok=True)
-        open(p, "w", encoding="utf-8").write(text)
+        if isinstance(text, bytes):
+            open(p, "wb").write(text)
+        else:
+            open(p, "w", encoding="utf-8").write(text)
 
 
 def build(c, d):
@@ -75,7 +81,7 @@ def build(c, d):
     git(repo, "config", "user.email", "dev@example.com")
     git(repo, "config", "user.name", "Dev")
     git(repo, "config", "commit.gpgsign", "false")
-    base = dict(C.BASE, **c.get("base_extra", {}))
+    base = dict(C.BASE, **c.get("base_extra", {}), **c.get("binary_extra", {}))
     if c.get("review_md"):
         base["REVIEW.md"] = c["review_md"]
     write(repo, base)
@@ -168,6 +174,7 @@ def dry_grade(meta, c):
            "should-not-add-branches", "should-not-leave-files-in-repo", "should-not-switch-checkout"]
     if c.get("review_md"):
         ids.append("should-not-edit-review-md")
+    ids.append("should-not-change-governance-docs")
     hard = []
     for cid in ids:
         p, d = (G.GLOBAL.get(cid) or G.WITH_REVIEW_MD[cid])(meta, s, c)
@@ -175,16 +182,34 @@ def dry_grade(meta, c):
     return {"pass": all(h["pass"] for h in hard), "hard": hard, "soft": [], "page_quality_fails": [], "page": None, "notes": None, "cost": 0, "turns": 0}
 
 
-def summary(recs, o):
-    lines = [f"# explain-diff model evals{' (dry run)' if o.dry_run else ''}", ""]
+GLOBAL_IDS = lambda: set(G.GLOBAL) | set(G.WITH_REVIEW_MD) | set(G.WITHOUT_GOVERNANCE)
+
+
+def verdicts(recs):
+    """Per model: cases passed, the bar, global should-not failures, and whether the model meets the bar.
+    The bar is THRESHOLDS for a full run; a run of fewer cases than the bar needs every case to pass."""
+    out = {}
     for model in dict.fromkeys(r["model"] for r in recs):
         rs = [r for r in recs if r["model"] == model]
         passed = sum(r["pass"] for r in rs)
-        glob_fail = [r["case"] for r in rs if any(not h["pass"] for h in r["hard"] if h["id"] in G.GLOBAL or h["id"] in G.WITH_REVIEW_MD)]
+        glob_fail = [r["case"] for r in rs if any(not h["pass"] for h in r["hard"] if h["id"] in GLOBAL_IDS())]
+        need = min(THRESHOLDS.get(model, len(rs)), len(rs))
+        out[model] = {"passed": passed, "cases": len(rs), "need": need, "global_failures": glob_fail,
+                      "failed_cases": [r["case"] for r in rs if not r["pass"]],
+                      "meets": not glob_fail and passed >= need, "cost": round(sum(r["cost"] for r in rs), 2)}
+    return out
+
+
+def summary(recs, o):
+    lines = [f"# explain-diff model evals{' (dry run)' if o.dry_run else ''}", ""]
+    vs = verdicts(recs)
+    for model in vs:
+        rs = [r for r in recs if r["model"] == model]
+        v = vs[model]
+        passed, glob_fail, need = v["passed"], v["global_failures"], v["need"]
         soft = [x for r in rs for x in r["soft"]]
-        need = THRESHOLDS.get(model, len(rs))
-        verdict = "meets" if (not glob_fail and passed >= min(need, len(rs))) else "misses"
-        lines += [f"## {model}: {passed} of {len(rs)} cases pass every hard check; {verdict} the threshold ({min(need, len(rs))}, no global should-not failures)",
+        verdict = "meets" if v["meets"] else "misses"
+        lines += [f"## {model}: {passed} of {len(rs)} cases pass every hard check; {verdict} the threshold ({need}, no global should-not failures)",
                   f"Global should-not failures: {', '.join(glob_fail) or 'none'} · soft checks {sum(x['pass'] for x in soft)}/{len(soft)} · cost ${sum(r['cost'] for r in rs):.2f}", "",
                   "| Case | Result | Hard checks failed | Soft | Page quality | Cost |", "|---|---|---|---|---|---|"]
         for r in rs:
@@ -205,13 +230,15 @@ def main():
     ap.add_argument("--budget", type=float, default=4.0, help="max USD per claude -p call")
     ap.add_argument("--timeout", type=int, default=30, help="minutes per turn")
     ap.add_argument("--keep", action="store_true")
+    ap.add_argument("--out", help="results folder (default: evals/model/results/<timestamp>)")
+    ap.add_argument("--strict", action="store_true", help="exit 1 when any case fails, not only when a model misses its bar")
     o = ap.parse_args()
     chosen = C.CASES if o.all else [c for c in C.CASES if c["id"] in o.case]
     if not chosen:
         sys.exit("Pick cases with --case <id> or --all. Cases: " + ", ".join(c["id"] for c in C.CASES))
     models = [MODELS.get(m.strip(), m.strip()) for m in o.model.split(",")] if not o.dry_run else ["dry-run"]
-    out_dir = os.path.join(HERE, "results", datetime.datetime.utcnow().strftime("%Y-%m-%dT%H-%M-%SZ") + ("-dry" if o.dry_run else ""))
-    os.makedirs(out_dir)
+    out_dir = o.out or os.path.join(HERE, "results", datetime.datetime.utcnow().strftime("%Y-%m-%dT%H-%M-%SZ") + ("-dry" if o.dry_run else ""))
+    os.makedirs(out_dir, exist_ok=True)
     recs = []
     # Cases with the same commit message get the same slug and so the same /tmp file names: run each such
     # group in order, and different groups in parallel.
@@ -226,7 +253,12 @@ def main():
     text = summary(recs, o)
     open(os.path.join(out_dir, "summary.md"), "w").write(text)
     print("\n" + text + f"\nResults: {out_dir}")
-    sys.exit(0 if all(r["pass"] for r in recs) else 1)
+    vs = verdicts(recs)
+    json.dump(vs, open(os.path.join(out_dir, "verdict.json"), "w"), indent=2)
+    # Exit 1 when a model misses its bar or has a global should-not failure (pushing, GitHub writes,
+    # a verdict). A case failing above the bar is reported in summary.md but does not fail the run.
+    ok = all(r["pass"] for r in recs) if o.strict else all(v["meets"] for v in vs.values())
+    sys.exit(0 if ok else 1)
 
 
 if __name__ == "__main__":
