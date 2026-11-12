@@ -176,6 +176,18 @@ def bad_format(d):
     d["documents"][0]["format"] = "xlsx"
 
 
+def exception_without_team(d):
+    d["controls"][0]["exceptions"]["approvers"] = ["the platform folks"]
+
+
+def no_exception_rule(d):
+    del d["controls"][1]["exceptions"]
+
+
+def disallow_exceptions(d):
+    d["controls"][0]["exceptions"] = {"allowed": False, "approvers": [], "maxDays": None}
+
+
 MUTATIONS = [
     ("external script tag", patch("</body>", '<script src="https://cdn.example/x.js"></script></body>'), "S1-no-external-assets"),
     ("network call", patch(main_script, main_script + 'fetch("https://evil.example/x");'), "S2-no-network-apis"),
@@ -203,6 +215,11 @@ MUTATIONS = [
     ("page says governance passed", patch("<h3>Where to look</h3>", "<h3>Where to look</h3><p>Governance passed.</p>"), "S14-governance-data"),
     ("gate markup starts passed", patch('id="gate-status" data-state="blocked"', 'id="gate-status" data-state="passed"'), "S15-gate"),
     ("no Retake quiz button", patch('id="quiz-reset"', 'id="quiz-again"'), "S15-gate"),
+    ("exceptions allowed with no GitHub team", governance_patch(exception_without_team), "S14-governance-data"),
+    ("control with no exceptions rule", governance_patch(no_exception_rule), "S14-governance-data"),
+    ("Exception button on a control that allows none", governance_patch(disallow_exceptions), "S14-governance-data"),
+    ("Exception button enabled on load", patch('data-result="exception" aria-pressed="false" disabled', 'data-result="exception" aria-pressed="false"'), "S14-governance-data"),
+    ("no remediation record area", patch('id="remediation-record"', 'id="remediation-notes"'), "S15-gate"),
     ("no gate data block", re.sub(r'<script type="application/json" id="gate-data">.*?</script>', "", good_html, count=1, flags=re.S), "S15-gate"),
 ]
 for i, (name, html, expect) in enumerate(MUTATIONS):
@@ -216,8 +233,12 @@ else:
     print("\n== 4. Gate behavior: one defect at a time, browser ==")
     GATE_MUTATIONS = [
         ("gate ignores wrong quiz answers", patch("state=(q.wrong>0||notmet.length)?'failed'", "state=(notmet.length)?'failed'")),
-        ("gate ignores unmarked controls", patch("(g.present&&marked.length<g.controls.length))?'blocked'", "false)?'blocked'")),
+        ("gate ignores unmarked controls", patch("(g.present&&done.length<g.controls.length))?'blocked'", "false)?'blocked'")),
         ("Retake keeps old answers", patch("function retake(){attempt++;render(true);", "function retake(){attempt++;")),
+        ("an exception counts without an approval link", patch("if(!URLRE.test(e.url||''))return 'needs the link to the approval comment on the PR';", "")),
+        ("an exception counts past its day limit", patch("if(e.expires>iso(m))return", "if(false)return")),
+        ("Exception is enabled before a record exists", patch("b.disabled=!(recorded[id]&&plans[id]&&plans[id].path==='exception')", "b.disabled=false")),
+        ("a record can be created with no note", patch("return !p||!p.path||!p.note", "return !p||!p.path")),
         ("a question can be answered twice", patch("if(answers[qi]!==null)return;\n     Object.keys(btns).forEach(function(k){btns[k].disabled=true});",
                                                     "Object.keys(btns).forEach(function(k){btns[k].disabled=false});")),
     ]

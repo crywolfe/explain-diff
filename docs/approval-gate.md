@@ -1,6 +1,6 @@
 # Enforcing the gate in GitHub
 
-The explain-diff page has a Gate: it stays closed until the reviewer answers all five quiz questions right in one attempt and marks every governance control, with none Not met. On its own the page cannot stop anyone approving a pull request. It is an offline file with no network access, and GitHub has no hook that blocks the Approve button. What GitHub can block is the merge. This page describes how to do that. It is a design; nothing here is installed by the plugin.
+The explain-diff page has a Gate: it stays closed until the reviewer answers all five quiz questions right in one attempt and marks every governance control, with none Not met. On its own the page cannot stop anyone approving a pull request. It is an offline file with no network access, and GitHub has no hook that blocks the Approve button. What GitHub can block is the merge. This page describes how to do that, including checking governance exceptions. It is a design; nothing here is installed by the plugin.
 
 ## What the page gives you
 
@@ -72,9 +72,16 @@ jobs:
               description: passed ? 'An approver attested for this commit' : 'No approver has attested for this commit' });
 ```
 
+4. **Check exceptions.** For each attestation entry with `"mark": "exception"`, fetch the comment at its `approval` link and require that:
+   - it starts with `explain-diff exception`, and its JSON names the same `control` and the PR's head `commit`;
+   - its author is a member of a team in that control's `Exceptions` line (`GET /orgs/{org}/teams/{team}/memberships/{user}`, which needs a token with `read:org`);
+   - its `expires` is in the future and no later than the line's limit after the comment's date, and its `ticket` and `reason` are not empty;
+   - a remediation record on the PR chose the Exception path for that control, and every required action in it is marked done.
+   The team and limit come from the governance documents in `docs/governance/` on the base branch, so a PR cannot widen its own exceptions. A scheduled run can also list merged PRs whose exceptions expire within a week and open an issue for each follow-up ticket.
+
 ## Limits
 
 - The quiz answers are in the page, and the attestation is text the reviewer could write by hand. The gate checks attention, not knowledge. What the workflow does guarantee is a record of who attested to what, for which commit, signed by their GitHub identity. That record is what an audit uses.
 - Making the quiz itself hard to bypass needs a server that holds the answers and issues a signed result. That conflicts with the page being an offline file, and is out of scope here.
 - Governance marks are the reviewer's judgment. The workflow checks that none is Not met; it cannot check that a Met is true. Controls whose sign-off names a second role (security lead, data owner) still need that person, for example through CODEOWNERS on the affected paths.
-- Remediation for a Not met control is not designed yet. The page's Remediation button lists the failed controls and says to record them on the PR.
+- The page checks an exception's link format and expiry, not who posted it. Step 4 above is what checks the approver.

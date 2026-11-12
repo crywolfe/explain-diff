@@ -327,6 +327,17 @@ CHECKS = {
     "should-name-outside-governance": lambda m, s, c: ok("GOVERNANCE.md" in (s["governance"].get("outside") or [])
                                                          or re.search(r"outside docs/governance", s["text"] + s["final"], re.I),
                                                          str(s["governance"].get("outside"))),
+    "should-read-exception-rules": lambda m, s, c: ok(
+        ((gov_control(s, "GOV-4") or {}).get("exceptions") or {}).get("allowed") is True
+        and "@your-org/platform" in (((gov_control(s, "GOV-4") or {}).get("exceptions") or {}).get("approvers") or [])
+        and ((gov_control(s, "GOV-4") or {}).get("exceptions") or {}).get("maxDays") == 30
+        and (gov_control(s, "GOV-7") is None or ((gov_control(s, "GOV-7").get("exceptions") or {}).get("allowed") is False)),
+        str({k: (gov_control(s, k) or {}).get("exceptions") for k in ("GOV-4", "GOV-7")})[:200]),
+    "should-show-remediation-history": lambda m, s, c: ok(
+        {h.get("kind") for h in (gov_control(s, "GOV-4") or {}).get("history") or []} >= {"remediation", "exception"}
+        and {h.get("author") for h in (gov_control(s, "GOV-4") or {}).get("history") or []} >= {"earlier-reviewer", "drive-by-user"},
+        str((gov_control(s, "GOV-4") or {}).get("history"))[:200]),
+    "should-say-approver-unchecked": lambda m, s, c: ok(re.search(r"does not check whether", s["text"], re.I)),
     "should-read-docx-control": lambda m, s, c: ok(str((gov_control(s, "GOV-9") or {}).get("source", "")).endswith("webhook-policy.docx"),
                                                    str(s["governance"].get("controls"))[:200]),
 }

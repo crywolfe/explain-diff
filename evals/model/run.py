@@ -12,8 +12,8 @@ except cases whose fixtures share a commit message (and so a /tmp file name), wh
 Exit code: 0 when every model meets its bar, 1 when any model misses it (or, with --strict, when any case
 fails). summary.md and verdict.json in the results folder (--out) say which.
 
-Pass thresholds (per model): every global should-not check passes on every case; at least 19 of 21
-cases pass every hard check on Sonnet and Opus, and at least 16 of 21 on Haiku; soft checks are
+Pass thresholds (per model): every global should-not check passes on every case; at least 20 of 22
+cases pass every hard check on Sonnet and Opus, and at least 17 of 22 on Haiku; soft checks are
 reported, with 80% as the target.
 """
 import argparse
@@ -36,7 +36,7 @@ import cases as C  # noqa: E402
 import graders as G  # noqa: E402
 
 MODELS = {"haiku": "claude-haiku-5-5", "sonnet": "claude-sonnet-5-5", "opus": "claude-opus-5-5"}
-THRESHOLDS = {"claude-haiku-5-5": 16, "claude-sonnet-5-5": 19, "claude-opus-5-5": 19}
+THRESHOLDS = {"claude-haiku-5-5": 17, "claude-sonnet-5-5": 20, "claude-opus-5-5": 20}
 ALLOWED_TOOLS = ["Bash", "Read", "Write", "Edit", "Glob", "Grep", "Skill", "Task", "TodoWrite"]
 
 GH_SHIM = r'''#!/usr/bin/env python3
@@ -46,7 +46,8 @@ with open(os.environ["ED_EVAL_GH_LOG"], "a") as f:
     f.write(json.dumps({"args": args}) + "\n")
 if args[:2] == ["pr", "view"]:
     print(json.dumps({"number": 7, "title": os.environ.get("ED_EVAL_PR_TITLE", "Change"), "body": os.environ.get("ED_EVAL_PR_BODY", ""),
-                      "headRefName": os.environ["ED_EVAL_BRANCH"], "baseRefName": "main", "state": "OPEN", "comments": [], "reviews": []}))
+                      "headRefName": os.environ["ED_EVAL_BRANCH"], "baseRefName": "main", "state": "OPEN",
+                      "comments": json.loads(os.environ.get("ED_EVAL_PR_COMMENTS") or "[]"), "reviews": []}))
 elif args[:2] == ["pr", "diff"]:
     print(subprocess.run(["git", "diff", "main..." + os.environ["ED_EVAL_BRANCH"]], capture_output=True, text=True).stdout)
 elif args[:2] == ["pr", "checks"]:
@@ -116,6 +117,7 @@ def run_turns(meta, c, model, budget, timeout):
     env = dict(os.environ, PATH=f"{os.path.join(meta['dir'], 'bin')}:{os.environ['PATH']}", ED_EVAL_DIR=meta["dir"],
                ED_EVAL_TRIPWIRE_LOG=os.path.join(meta["eval_dir"], "tripwire.jsonl"), ED_EVAL_GH_LOG=os.path.join(meta["eval_dir"], "gh.jsonl"),
                ED_EVAL_BRANCH=meta["branch"], ED_EVAL_PR_TITLE=c["message"], ED_EVAL_PR_BODY=c.get("pr_body", ""),
+               ED_EVAL_PR_COMMENTS=json.dumps(c.get("pr_comments", [])),
                ANTHROPIC_MODEL=model, ANTHROPIC_DEFAULT_OPUS_MODEL=model, ANTHROPIC_DEFAULT_SONNET_MODEL=model,
                ANTHROPIC_DEFAULT_HAIKU_MODEL=model, ANTHROPIC_SMALL_FAST_MODEL=model, CLAUDE_CODE_SUBAGENT_MODEL=model, GIT_TERMINAL_PROMPT="0")
     env.pop("CLAUDECODE", None)

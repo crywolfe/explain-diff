@@ -344,6 +344,17 @@ def governance_checks(block, snippets, attrs, text, tags=()):
             for k in ("result", "status", "mark", "marked", "met", "passed", "verdict"):
                 if k in c:
                     msgs.append(f"control {c.get('id')} carries {k!r}: the reviewer marks controls, not the page")
+            x = c.get("exceptions")
+            if not isinstance(x, dict) or not isinstance(x.get("allowed"), bool):
+                msgs.append(f"control {c.get('id')} has no exceptions rule")
+            elif x["allowed"]:
+                if not x.get("approvers") or not all(re.match(r"^@[\w.-]+/[\w.-]+$", str(a)) for a in x["approvers"]):
+                    msgs.append(f"control {c.get('id')} allows exceptions with no GitHub team as approver")
+                if x.get("maxDays") is not None and not (isinstance(x["maxDays"], int) and x["maxDays"] > 0):
+                    msgs.append(f"control {c.get('id')} has a bad maxDays {x.get('maxDays')!r}")
+            for h in c.get("history") or []:
+                if h.get("kind") not in ("remediation", "exception") or not h.get("author"):
+                    msgs.append(f"control {c.get('id')} has a history entry without a kind or author")
     elif controls:
         msgs.append("controls listed with present false")
     cards = {v for t, k, v in attrs if k == "data-control"}
@@ -353,8 +364,19 @@ def governance_checks(block, snippets, attrs, text, tags=()):
     results = [v for t, k, v in attrs if k == "data-result"]
     if results and len(results) < 3 * len(ids):
         msgs.append("a control card lacks its Met, Not met, and Does not apply buttons")
-    if any(t.get("data-result") in MARKS and t.get("aria-pressed") == "true" for t in tags):
+    if any(t.get("data-result") in MARKS | {"exception"} and t.get("aria-pressed") == "true" for t in tags):
         msgs.append("a governance button is pressed on load")
+    if any(t.get("data-result") == "exception" and "disabled" not in t for t in tags):
+        msgs.append("an Exception button is enabled on load")
+    exc_cards, cur = set(), None
+    for t, k, v in attrs:
+        if k == "data-control":
+            cur = v
+        elif k == "data-result" and v == "exception" and cur:
+            exc_cards.add(cur)
+    allowed = {c.get("id") for c in controls if (c.get("exceptions") or {}).get("allowed")}
+    if exc_cards != allowed:
+        msgs.append(f"Exception buttons on {sorted(exc_cards)} but exceptions allowed on {sorted(allowed)}")
     said = sorted(set(m.group(0) for m in GOV_VERDICT.finditer(QUOTED.sub(" ", text))))
     if said:
         msgs.append(f"governance verdict in the page's voice: {said}")
@@ -373,7 +395,7 @@ def gate_checks(block, attrs):
         except Exception as e:
             msgs.append(f"gate-data does not parse: {e}")
     ids = {v for t, k, v in attrs if k == "id"}
-    for need in ("gate-status", "quiz-reset", "gov-reset", "remediate", "gate-attestation"):
+    for need in ("gate-status", "quiz-reset", "gov-reset", "remediate", "gate-attestation", "remdlg", "rem-create", "remediation-record"):
         if need not in ids:
             msgs.append(f"no #{need}")
     states = [v for t, k, v in attrs if k == "data-state"]
@@ -384,7 +406,7 @@ def gate_checks(block, attrs):
     return ("FAIL" if msgs else "PASS"), ("; ".join(msgs) or "gate starts blocked")
 
 
-GATE_JS = """(cmd)=>{
+GATE_JS = r"""(cmd)=>{
  const Q=JSON.parse(document.getElementById('quiz-data').textContent);
  const state=()=>document.getElementById('gate-status').dataset.state;
  const click=e=>e.dispatchEvent(new MouseEvent('click',{bubbles:true}));
@@ -410,6 +432,42 @@ GATE_JS = """(cmd)=>{
  if(out.controls){mark(i=>i===0?'notmet':'met'); out.notMet=state();
   out.remediateShown=!document.getElementById('remediate').hidden;
   click(document.getElementById('gov-reset')); out.afterGovReset=state();}
+ // Remediation: a control that allows exceptions goes Not met, gets a record, then a complete Exception mark.
+ const G=JSON.parse(document.getElementById('governance-data').textContent);
+ const allows=(G.controls||[]).filter(c=>c.exceptions&&c.exceptions.allowed).map(c=>c.id);
+ out.excButtons=[...document.querySelectorAll('.gov-control')].filter(c=>c.querySelector('[data-result="exception"]')).map(c=>c.dataset.control);
+ out.allows=allows;
+ const card=allows.length?document.querySelector('.gov-control[data-control="'+allows[0]+'"]'):null;
+ if(card){
+  const id=allows[0],maxDays=(G.controls.find(c=>c.id===id).exceptions.maxDays)||30;
+  document.querySelectorAll('.gov-control').forEach(c=>{if(c!==card)click(c.querySelector('[data-result="met"]'))});
+  click(card.querySelector('[data-result="notmet"]'));
+  const exb=card.querySelector('[data-result="exception"]');
+  out.excDisabledBefore=exb.disabled;
+  click(document.getElementById('remediate'));
+  const fs=document.querySelector('.rem-control[data-control="'+id+'"]');
+  out.dialogListsControl=!!fs;
+  out.createDisabledEmpty=document.getElementById('rem-create').disabled;
+  if(fs){const r=fs.querySelector('input[value="exception"]');r.checked=true;r.dispatchEvent(new Event('change',{bubbles:true}));
+   out.createDisabledNoNote=document.getElementById('rem-create').disabled;
+   const n=fs.querySelector('.rem-note');n.value='check note';n.dispatchEvent(new Event('input',{bubbles:true}));
+   fs.querySelectorAll('input[type=checkbox]').forEach(b=>{b.checked=true;b.dispatchEvent(new Event('change',{bubbles:true}))});}
+  click(document.getElementById('rem-create'));
+  const txt=document.getElementById('remediation-record').value;
+  try{const m=txt.match(/^explain-diff remediation\n```json\n([\s\S]*?)\n```/);const rec=JSON.parse(m[1]);out.recordOk=rec.kind==='remediation'&&rec.controls.some(c=>c.id===id&&c.path==='exception');}catch(e){out.recordOk=false}
+  const dlg=document.getElementById('remdlg');if(dlg.open)dlg.close();
+  out.excDisabledAfter=exb.disabled;
+  click(exb);
+  const u=card.querySelector('.exc-url'),d=card.querySelector('.exc-expires');
+  const iso=k=>{const t=new Date();t.setHours(0,0,0,0);t.setDate(t.getDate()+k);return t.getFullYear()+'-'+String(t.getMonth()+1).padStart(2,'0')+'-'+String(t.getDate()).padStart(2,'0')};
+  const set=(url,exp)=>{u.value=url;u.dispatchEvent(new Event('input',{bubbles:true}));d.value=exp;d.dispatchEvent(new Event('input',{bubbles:true}))};
+  set('https://github.com/o/r/pull/7#issuecomment-1',iso(1)); out.excValid=state();
+  try{const a=JSON.parse(document.getElementById('gate-attestation').value);out.attException=(a.governance||[]).some(g=>g.id===id&&g.mark==='exception'&&g.approval&&g.expires);}catch(e){out.attException=false}
+  set('https://evil.example/approve',iso(1)); out.excBadUrl=state();
+  set('https://github.com/o/r/pull/7#issuecomment-1',iso(maxDays+5)); out.excTooLong=state();
+  set('https://github.com/o/r/pull/7#issuecomment-1',iso(0)); out.excToday=state();
+  click(document.getElementById('gov-reset'));
+ }
  return out}"""
 
 
@@ -449,7 +507,15 @@ def gate_dynamic(pg):
             msgs.append("Remediation hidden with a Not met control")
         if o["afterGovReset"] != "blocked":
             msgs.append(f"Reset governance gives {o['afterGovReset']}")
-    return ("FAIL" if msgs else "PASS"), ("; ".join(msgs) or f"blocked, passed, retake, failed, remediation all behave ({o['controls']} controls)")
+    if sorted(o["excButtons"]) != sorted(o["allows"]):
+        msgs.append(f"Exception buttons on {o['excButtons']} but exceptions allowed on {o['allows']}")
+    if o["allows"]:
+        expect = {"excDisabledBefore": True, "dialogListsControl": True, "createDisabledEmpty": True, "createDisabledNoNote": True, "recordOk": True,
+                  "excDisabledAfter": False, "excValid": "passed", "attException": True, "excBadUrl": "blocked", "excTooLong": "blocked", "excToday": "blocked"}
+        for k, want in expect.items():
+            if o.get(k) != want:
+                msgs.append(f"remediation {k}: got {o.get(k)!r}, want {want!r}")
+    return ("FAIL" if msgs else "PASS"), ("; ".join(msgs) or f"blocked, passed, retake, failed, remediation, exception all behave ({o['controls']} controls)")
 
 
 def dynamic_checks(path, canaries):
