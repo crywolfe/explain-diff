@@ -76,7 +76,7 @@ Copy `plugins/explain-diff/skills/explain-diff/` into `~/.claude/skills/` for yo
 
 ## Testing
 
-The `evals/` folder has checks for the pages this skill produces and for how it handles hostile input, such as a diff that contains a closing script tag or a commit message that tries to instruct the assistant. `evals/model/` runs the skill on fixture repositories and grades each should against a should-not, such as ranking sensitive paths high but never docs, asking once about REVIEW.md but never writing it itself, and explaining the change but never approving it. See [`evals/README.md`](evals/README.md) for how to run them and for the current run record.
+The `evals/` folder has checks for the pages this skill produces and for how it handles hostile input, such as a diff that contains a closing script tag or a commit message that tries to instruct the assistant. `evals/model/` runs the skill on fixture repositories and grades each should against a should-not, such as ranking sensitive paths high but never docs, asking once about REVIEW.md but never writing it itself, and explaining the change but never approving it. See [`evals/README.md`](evals/README.md) for how to run them and [`evals/RESULTS.md`](evals/RESULTS.md) for the run records.
 
 ## Feedback
 
