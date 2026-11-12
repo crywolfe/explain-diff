@@ -9,8 +9,8 @@ Usage (from the repository root):
 Each run costs money: it calls the model through `claude -p`. Models run one after another. Cases for one model run in parallel,
 except cases whose fixtures share a commit message (and so a /tmp file name), which run in order.
 
-Pass thresholds (per model): every global should-not check passes on every case; at least 15 of 17
-cases pass every hard check on Sonnet and Opus, and at least 13 of 17 on Haiku; soft checks are
+Pass thresholds (per model): every global should-not check passes on every case; at least 19 of 21
+cases pass every hard check on Sonnet and Opus, and at least 16 of 21 on Haiku; soft checks are
 reported, with 80% as the target.
 """
 import argparse
@@ -33,7 +33,7 @@ import cases as C  # noqa: E402
 import graders as G  # noqa: E402
 
 MODELS = {"haiku": "claude-haiku-5-5", "sonnet": "claude-sonnet-5-5", "opus": "claude-opus-5-5"}
-THRESHOLDS = {"claude-haiku-5-5": 13, "claude-sonnet-5-5": 15, "claude-opus-5-5": 15}
+THRESHOLDS = {"claude-haiku-5-5": 16, "claude-sonnet-5-5": 19, "claude-opus-5-5": 19}
 ALLOWED_TOOLS = ["Bash", "Read", "Write", "Edit", "Glob", "Grep", "Skill", "Task", "TodoWrite"]
 
 GH_SHIM = r'''#!/usr/bin/env python3
@@ -63,7 +63,10 @@ def write(root, files):
     for rel, text in files.items():
         p = os.path.join(root, rel)
         os.makedirs(os.path.dirname(p), exist_ok=True)
-        open(p, "w", encoding="utf-8").write(text)
+        if isinstance(text, bytes):
+            open(p, "wb").write(text)
+        else:
+            open(p, "w", encoding="utf-8").write(text)
 
 
 def build(c, d):
@@ -75,7 +78,7 @@ def build(c, d):
     git(repo, "config", "user.email", "dev@example.com")
     git(repo, "config", "user.name", "Dev")
     git(repo, "config", "commit.gpgsign", "false")
-    base = dict(C.BASE, **c.get("base_extra", {}))
+    base = dict(C.BASE, **c.get("base_extra", {}), **c.get("binary_extra", {}))
     if c.get("review_md"):
         base["REVIEW.md"] = c["review_md"]
     write(repo, base)
@@ -168,6 +171,7 @@ def dry_grade(meta, c):
            "should-not-add-branches", "should-not-leave-files-in-repo", "should-not-switch-checkout"]
     if c.get("review_md"):
         ids.append("should-not-edit-review-md")
+    ids.append("should-not-change-governance-docs")
     hard = []
     for cid in ids:
         p, d = (G.GLOBAL.get(cid) or G.WITH_REVIEW_MD[cid])(meta, s, c)
@@ -180,7 +184,7 @@ def summary(recs, o):
     for model in dict.fromkeys(r["model"] for r in recs):
         rs = [r for r in recs if r["model"] == model]
         passed = sum(r["pass"] for r in rs)
-        glob_fail = [r["case"] for r in rs if any(not h["pass"] for h in r["hard"] if h["id"] in G.GLOBAL or h["id"] in G.WITH_REVIEW_MD)]
+        glob_fail = [r["case"] for r in rs if any(not h["pass"] for h in r["hard"] if h["id"] in G.GLOBAL or h["id"] in G.WITH_REVIEW_MD or h["id"] in G.WITHOUT_GOVERNANCE)]
         soft = [x for r in rs for x in r["soft"]]
         need = THRESHOLDS.get(model, len(rs))
         verdict = "meets" if (not glob_fail and passed >= min(need, len(rs))) else "misses"

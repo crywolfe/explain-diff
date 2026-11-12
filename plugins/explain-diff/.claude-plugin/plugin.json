@@ -1,10 +1,10 @@
 {
   "name": "explain-diff",
-  "version": "1.1.0",
-  "description": "Explains a code change, diff, branch, or pull request as one interactive HTML page with intent, visualizations, a linked code panel, a review guide, and a quiz.",
+  "version": "1.2.0",
+  "description": "Explains a code change, diff, branch, or pull request as one interactive HTML page with intent, visualizations, a linked code panel, a review guide, governance controls, a quiz, and a human gate.",
   "author": {
     "name": "Gerry Wolfe"
   },
   "license": "MIT",
-  "keywords": ["code review", "pull request", "diff", "visualization"]
+  "keywords": ["code review", "pull request", "diff", "visualization", "governance"]
 }

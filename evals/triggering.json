@@ -26,6 +26,10 @@
       "expect": "trigger"
     },
     {
+      "query": "explain PR #123 and show which governance controls in docs/governance it touches",
+      "expect": "trigger"
+    },
+    {
       "query": "review PR #123 and list the bugs",
       "expect": "no_trigger",
       "note": "code review, not an explanation page"
@@ -71,6 +75,14 @@
       "query": "summarize this diff",
       "expect": "ambiguous",
       "note": "an inline summary is acceptable; record what happens"
+    },
+    {
+      "query": "mark the governance controls on PR #123 as met",
+      "expect": "no_trigger"
+    },
+    {
+      "query": "write a GOVERNANCE.md for this repo",
+      "expect": "no_trigger"
     }
   ]
 }
