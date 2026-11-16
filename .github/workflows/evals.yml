@@ -5,7 +5,7 @@
 #                    a miss opens or updates an issue labelled eval-regression, a pass closes it
 # workflow_dispatch  model evals on the models and cases you choose; alert is optional
 #
-# Model evals need the repository secret ANTHROPIC_API_KEY. They cost roughly $10 to $20 per model per full run.
+# Model evals need the repository secret ANTHROPIC_API_KEY; without it they are skipped with a warning. They cost roughly $10 to $20 per model per full run.
 name: evals
 
 on:
@@ -92,8 +92,9 @@ jobs:
             fi
           fi
           if [ "$run" = true ] && [ "$HAS_KEY" != true ]; then
-            echo "::error::Model evals need the repository secret ANTHROPIC_API_KEY."
-            exit 1
+            echo "::warning::Model evals skipped: the repository secret ANTHROPIC_API_KEY is not set."
+            echo "Model evals skipped: add the repository secret \`ANTHROPIC_API_KEY\` to run them." >> "$GITHUB_STEP_SUMMARY"
+            run=false
           fi
           json=$(python3 -c 'import json,sys; print(json.dumps([m.strip() for m in sys.argv[1].split(",") if m.strip()]))' "$models")
           echo "run=$run" >> "$GITHUB_OUTPUT"

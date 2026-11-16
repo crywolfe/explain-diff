@@ -133,7 +133,7 @@ Promptfoo can call `run.py` per case through an `exec:` provider and assert on t
 
 The weekly run catches drift: a new model snapshot or Claude Code release can change behavior when the skill has not changed. The model evals do not run before each use of the skill; `validate_page.py` checks each generated page instead.
 
-**Setup.** Add the repository secret `ANTHROPIC_API_KEY`. To block merges on a miss, make the `Offline checks` and `Model evals (...)` checks required in the branch ruleset. A model job that is skipped (the skill did not change) counts as passing. Pull requests from forks get no secrets, so their model evals are skipped with a notice.
+**Setup.** Add the repository secret `ANTHROPIC_API_KEY`. Until it is set, every trigger skips the model evals with a warning, the weekly run included, so drift goes unchecked. To block merges on a miss, make the `Offline checks` and `Model evals (...)` checks required in the branch ruleset. A model job that is skipped (the skill did not change) counts as passing. Pull requests from forks get no secrets, so their model evals are skipped with a notice.
 
 **Exit code.** `run.py` exits 1 when a model misses its bar or has any global should-not failure, and 0 otherwise. A case that fails above the bar shows in `summary.md` but does not fail the job. `--strict` exits 1 on any failed case. Each run writes `summary.md` and `verdict.json` to its results folder (`--out`).
 
