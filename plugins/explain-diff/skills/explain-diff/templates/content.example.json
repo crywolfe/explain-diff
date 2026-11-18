@@ -1,0 +1,1121 @@
+{
+ "title": "Retry with backoff in fetch_page",
+ "slug": "retry-backoff",
+ "tldr": "`fetch_page` now retries HTTP 429 and 503 up to four attempts with exponential backoff, and honors `Retry-After` up to an 8 second cap. Other failures still raise immediately, and `FetchError` now reports how many attempts were made. Tests pin the wait sequence by injecting a fake `sleep`.",
+ "assumptions": "This is a small invented sample repository used for the demo. I ran its 6 tests and all passed.",
+ "background": {
+  "body": [
+   "`fetch_page(url, session)` sends one HTTP GET through a `session` object and returns the body on status 200. Before this change, any other status raised `FetchError` immediately.",
+   "HTTP 429 means the server is rate limiting the caller. HTTP 503 means it is temporarily unavailable. Both usually clear within seconds. A server can send a `Retry-After` header to say how long to wait."
+  ],
+  "full": [
+   "**Mental model.** A session is any object with `get(url)` that returns something with `status`, `body`, and `headers`. Tests use a small fake, so no network is involved."
+  ]
+ },
+ "intent": {
+  "what": {
+   "text": "`fetch_page` retries HTTP 429 and 503 up to 4 attempts with waits of 0.5s, 1s, and 2s. It honors `Retry-After`. Other non-200 statuses still fail fast.",
+   "label": "stated",
+   "source": "commit message"
+  },
+  "why": {
+   "text": "Pages fail intermittently at peak load, and the whole job aborts on the first failure.",
+   "label": "stated",
+   "source": "commit message"
+  },
+  "decisions": [
+   {
+    "text": "`Retry-After` is capped at 8 seconds so one slow server cannot stall a worker.",
+    "label": "stated",
+    "source": "commit message"
+   },
+   {
+    "text": "The wait goes through an injectable `sleep` argument, so tests run without real delays.",
+    "label": "inferred",
+    "source": "signature and tests"
+   },
+   {
+    "text": "`FetchError` records the attempt count.",
+    "label": "stated",
+    "source": "commit message"
+   }
+  ],
+  "outOfScope": {
+   "text": "Jitter and an async client.",
+   "label": "stated",
+   "source": "commit message"
+  }
+ },
+ "review": {
+  "whereToLook": [
+   {
+    "ref": "s_loop",
+    "file": "pagefetch/client.py",
+    "risk": "medium",
+    "reasons": [
+     "new retry loop in the request path",
+     "changes how failures surface to callers"
+    ],
+    "sensitive": false
+   },
+   {
+    "ref": "s_delay",
+    "file": "pagefetch/client.py",
+    "risk": "medium",
+    "reasons": [
+     "wait computation honors a server header, capped at 8 seconds"
+    ],
+    "sensitive": false
+   },
+   {
+    "ref": "s_retryable",
+    "file": "pagefetch/client.py",
+    "risk": "low",
+    "reasons": [
+     "constant naming the retryable statuses"
+    ],
+    "sensitive": false
+   },
+   {
+    "ref": "s_test_cap",
+    "file": "tests/test_client.py",
+    "risk": "low",
+    "reasons": [
+     "test only"
+    ],
+    "sensitive": false
+   }
+  ],
+  "coverage": [
+   {
+    "ref": "s_loop",
+    "file": "pagefetch/client.py",
+    "tests": [
+     {
+      "name": "test_gives_up_after_four_attempts",
+      "file": "tests/test_client.py",
+      "ran": true,
+      "passed": true,
+      "ref": "s_test_giveup"
+     }
+    ]
+   },
+   {
+    "ref": "s_delay",
+    "file": "pagefetch/client.py",
+    "tests": [
+     {
+      "name": "test_retry_after_is_capped",
+      "file": "tests/test_client.py",
+      "ran": true,
+      "passed": true,
+      "ref": "s_test_cap"
+     }
+    ]
+   }
+  ],
+  "ci": "none",
+  "uncovered": [],
+  "rootCause": {
+   "applies": false,
+   "verdict": null,
+   "origin": null,
+   "fix": null,
+   "evidence": ""
+  },
+  "undo": {
+   "kind": "revert",
+   "flag": null,
+   "ref": "s_loop",
+   "evidence": "no persisted state"
+  },
+  "reviewMd": {
+   "present": false,
+   "path": null,
+   "rules": [],
+   "skipped": []
+  },
+  "forQa": {
+   "items": [
+    {
+     "try": "a server that answers 429 with `Retry-After: 120`",
+     "why": "the cap is the only guard against a stalled worker",
+     "ref": "s_delay",
+     "ac": null
+    },
+    {
+     "try": "four 503 responses in a row, then a 200",
+     "why": "the attempt limit decides whether the fourth answer is used",
+     "ref": "s_loop",
+     "ac": null
+    },
+    {
+     "try": "a 404 during peak load",
+     "why": "non-retryable statuses must still fail on the first attempt",
+     "ref": "s_retryable",
+     "ac": null
+    }
+   ],
+   "repoPath": null
+  }
+ },
+ "governance": {
+  "present": true,
+  "folder": "docs/governance",
+  "documents": [
+   {
+    "path": "docs/governance/GOVERNANCE.md",
+    "format": "md",
+    "readable": true,
+    "version": "2026-11"
+   }
+  ],
+  "outside": [],
+  "controls": [
+   {
+    "id": "GOV-4",
+    "title": "Calls to external services",
+    "source": "docs/governance/GOVERNANCE.md",
+    "location": "GOV-4",
+    "requirement": "The vendor is in the vendor register. Every request has a timeout. Retries are bounded in count and total wait, and honor the vendor's rate limit headers.",
+    "failure": "An unbounded retry or wait, a request with no timeout, or a vendor outside the register.",
+    "files": [
+     "pagefetch/client.py"
+    ],
+    "refs": [
+     "s_loop",
+     "s_delay"
+    ],
+    "evidence": "Attempts stop at `max_attempts=4` and each wait is capped at 8 seconds, from the code. No timeout argument appears in the diff; the `session` object is supplied by the caller. The vendor register is not in this repository.",
+    "signoff": "Reviewer; procurement for a new vendor."
+   },
+   {
+    "id": "GOV-7",
+    "title": "Change management",
+    "source": "docs/governance/GOVERNANCE.md",
+    "location": "GOV-7",
+    "requirement": "The PR states how the change is undone (flag, clean revert, or a rollback plan) and links the ticket.",
+    "failure": "Production code changes with no stated way to undo it.",
+    "files": [
+     "pagefetch/client.py"
+    ],
+    "refs": [
+     "s_loop"
+    ],
+    "evidence": "How to undo above reads Clean revert. No ticket key in the branch name or commit message.",
+    "signoff": "Reviewer."
+   }
+  ],
+  "notTouched": [
+   "GOV-1",
+   "GOV-2",
+   "GOV-3",
+   "GOV-5",
+   "GOV-6",
+   "GOV-8"
+  ],
+  "ignoredInstructions": false
+ },
+ "intuition": {
+  "body": [
+   "The toy request is `https://example.com/report`. The server answers 503 twice, then 200. Pick another case to see the other paths: a long `Retry-After`, retries running out, and a status that is never retried."
+  ],
+  "visual": "flow"
+ },
+ "code": {
+  "changeMap": "map",
+  "groups": [
+   {
+    "title": "Decide what counts as transient",
+    "body": [
+     "[[s_retryable]] names the two statuses worth retrying. [[s_error]] adds an `attempts` field to `FetchError` so callers can log how hard the function tried. It defaults to 1, which keeps existing `FetchError(message)` calls valid."
+    ]
+   },
+   {
+    "title": "Compute the wait",
+    "body": [
+     "[[s_delay]] returns `Retry-After` when the server supplies it, limited to `max_delay`. Otherwise the wait doubles from 0.5s and stops growing at 8s. `attempt` counts from 1, so the first wait equals `base`."
+    ]
+   },
+   {
+    "title": "The retry loop",
+    "body": [
+     "[[s_loop]] returns on 200 and raises immediately for statuses outside `RETRYABLE`. On the final attempt it raises instead of sleeping, so no time is wasted after the last failure. Otherwise it sleeps and tries again. `sleep` is an argument, defaulting to `time.sleep`."
+    ]
+   },
+   {
+    "title": "Tests pin the waits",
+    "body": [
+     "[[s_test_cap]] and [[s_test_giveup]] pass `waits.append` as `sleep`, so they assert the exact wait sequence without delaying the run."
+    ]
+   }
+  ],
+  "full": [
+   {
+    "callout": "`Retry-After` may also be an HTTP date. The loop calls `float()` on the header, and `float(\"Wed, 21 Oct 2026 07:28:00 GMT\")` raises `ValueError` when run. This is observed behavior of the code, not a stated goal of the change.",
+    "title": "Edge case not covered"
+   }
+  ],
+  "fullVisuals": [
+   "waits"
+  ]
+ },
+ "viz": {
+  "map": {
+   "type": "map",
+   "title": "Change map",
+   "caption": "Changed pieces in dependency order. Select one to see its diff in the code panel.",
+   "nodes": [
+    {
+     "label": "RETRYABLE set",
+     "ref": "s_retryable",
+     "status": "added"
+    },
+    {
+     "label": "FetchError.attempts",
+     "ref": "s_error",
+     "status": "changed"
+    },
+    {
+     "label": "backoff_delay",
+     "ref": "s_delay",
+     "status": "added"
+    },
+    {
+     "label": "fetch_page retry loop",
+     "ref": "s_loop",
+     "status": "rewritten"
+    },
+    {
+     "label": "Six tests",
+     "ref": "s_test_giveup",
+     "status": "extended"
+    }
+   ]
+  },
+  "flow": {
+   "id": "flow",
+   "viewBox": "0 0 380 340",
+   "alt": "Flow diagram of fetch_page: send request, check status, return body on 200, raise on other statuses, and for 429 or 503 check attempts left, then sleep and retry or raise.",
+   "nodes": [
+    {
+     "id": "req",
+     "label": "Send request",
+     "x": 185,
+     "y": 30,
+     "ref": "s_loop"
+    },
+    {
+     "id": "status",
+     "label": "Status code?",
+     "x": 185,
+     "y": 110,
+     "ref": "s_loop"
+    },
+    {
+     "id": "ok",
+     "label": "Return body",
+     "x": 62,
+     "y": 205,
+     "ref": "s_loop"
+    },
+    {
+     "id": "retry",
+     "label": "Attempts left?",
+     "x": 315,
+     "y": 205,
+     "ref": "s_loop"
+    },
+    {
+     "id": "raise",
+     "label": "Raise FetchError",
+     "x": 185,
+     "y": 305,
+     "ref": "s_error"
+    },
+    {
+     "id": "wait",
+     "label": "Sleep, then retry",
+     "x": 315,
+     "y": 305,
+     "ref": "s_delay"
+    }
+   ],
+   "edges": [
+    {
+     "id": "req-status",
+     "points": [
+      [
+       185,
+       47
+      ],
+      [
+       185,
+       93
+      ]
+     ]
+    },
+    {
+     "id": "status-ok",
+     "points": [
+      [
+       155,
+       125
+      ],
+      [
+       82,
+       188
+      ]
+     ],
+     "label": "200",
+     "lx": 98,
+     "ly": 150
+    },
+    {
+     "id": "status-retry",
+     "points": [
+      [
+       215,
+       125
+      ],
+      [
+       295,
+       188
+      ]
+     ],
+     "label": "429 / 503",
+     "lx": 262,
+     "ly": 150
+    },
+    {
+     "id": "status-raise",
+     "points": [
+      [
+       185,
+       127
+      ],
+      [
+       185,
+       288
+      ]
+     ],
+     "label": "other",
+     "lx": 191,
+     "ly": 215
+    },
+    {
+     "id": "retry-raise",
+     "points": [
+      [
+       282,
+       222
+      ],
+      [
+       234,
+       290
+      ]
+     ],
+     "label": "no",
+     "lx": 238,
+     "ly": 262
+    },
+    {
+     "id": "retry-wait",
+     "points": [
+      [
+       315,
+       222
+      ],
+      [
+       315,
+       288
+      ]
+     ],
+     "label": "yes",
+     "lx": 321,
+     "ly": 262
+    },
+    {
+     "id": "wait-req",
+     "points": [
+      [
+       373,
+       305
+      ],
+      [
+       377,
+       305
+      ],
+      [
+       377,
+       30
+      ],
+      [
+       245,
+       30
+      ]
+     ]
+    }
+   ],
+   "cases": [
+    {
+     "name": "503, 503, then 200",
+     "before": "raises FetchError (https://example.com/report returned 503), after 1 call",
+     "after": "3 calls, waits [0.5, 1.0], returns the body",
+     "steps": [
+      {
+       "caption": "Attempt 1: the server answers 503.",
+       "nodes": [
+        "req",
+        "status"
+       ],
+       "edges": [
+        "req-status"
+       ],
+       "state": {
+        "attempt": "1 of 4",
+        "status": 503,
+        "waited so far": "0.0s"
+       },
+       "ref": "s_loop"
+      },
+      {
+       "caption": "503 is retryable. Check whether attempts are left.",
+       "nodes": [
+        "status",
+        "retry"
+       ],
+       "edges": [
+        "status-retry"
+       ],
+       "state": {
+        "attempt": "1 of 4",
+        "status": 503,
+        "waited so far": "0.0s"
+       },
+       "ref": "s_loop"
+      },
+      {
+       "caption": "Attempts left (1 of 4 used). backoff_delay(1) doubles from 0.5s, giving 0.5s.",
+       "nodes": [
+        "retry",
+        "wait"
+       ],
+       "edges": [
+        "retry-wait"
+       ],
+       "state": {
+        "attempt": "1 of 4",
+        "status": 503,
+        "waited so far": "0.0s"
+       },
+       "ref": "s_delay"
+      },
+      {
+       "caption": "Sleep 0.5s, then send the request again.",
+       "nodes": [
+        "wait",
+        "req"
+       ],
+       "edges": [
+        "wait-req"
+       ],
+       "state": {
+        "attempt": "1 of 4",
+        "status": 503,
+        "waited so far": "0.5s"
+       },
+       "ref": "s_loop"
+      },
+      {
+       "caption": "Attempt 2: the server answers 503.",
+       "nodes": [
+        "req",
+        "status"
+       ],
+       "edges": [
+        "req-status"
+       ],
+       "state": {
+        "attempt": "2 of 4",
+        "status": 503,
+        "waited so far": "0.5s"
+       },
+       "ref": "s_loop"
+      },
+      {
+       "caption": "503 is retryable. Check whether attempts are left.",
+       "nodes": [
+        "status",
+        "retry"
+       ],
+       "edges": [
+        "status-retry"
+       ],
+       "state": {
+        "attempt": "2 of 4",
+        "status": 503,
+        "waited so far": "0.5s"
+       },
+       "ref": "s_loop"
+      },
+      {
+       "caption": "Attempts left (2 of 4 used). backoff_delay(2) doubles from 0.5s, giving 1.0s.",
+       "nodes": [
+        "retry",
+        "wait"
+       ],
+       "edges": [
+        "retry-wait"
+       ],
+       "state": {
+        "attempt": "2 of 4",
+        "status": 503,
+        "waited so far": "0.5s"
+       },
+       "ref": "s_delay"
+      },
+      {
+       "caption": "Sleep 1.0s, then send the request again.",
+       "nodes": [
+        "wait",
+        "req"
+       ],
+       "edges": [
+        "wait-req"
+       ],
+       "state": {
+        "attempt": "2 of 4",
+        "status": 503,
+        "waited so far": "1.5s"
+       },
+       "ref": "s_loop"
+      },
+      {
+       "caption": "Attempt 3: the server answers 200.",
+       "nodes": [
+        "req",
+        "status"
+       ],
+       "edges": [
+        "req-status"
+       ],
+       "state": {
+        "attempt": "3 of 4",
+        "status": 200,
+        "waited so far": "1.5s"
+       },
+       "ref": "s_loop"
+      },
+      {
+       "caption": "Status 200: return the body.",
+       "nodes": [
+        "status",
+        "ok"
+       ],
+       "edges": [
+        "status-ok"
+       ],
+       "state": {
+        "attempt": "3 of 4",
+        "status": 200,
+        "waited so far": "1.5s",
+        "result": "body returned"
+       },
+       "ref": "s_loop"
+      }
+     ]
+    },
+    {
+     "name": "429 with Retry-After: 30",
+     "before": "raises FetchError (https://example.com/report returned 429), after 1 call",
+     "after": "2 calls, waits [8.0], returns the body",
+     "steps": [
+      {
+       "caption": "Attempt 1: the server answers 429.",
+       "nodes": [
+        "req",
+        "status"
+       ],
+       "edges": [
+        "req-status"
+       ],
+       "state": {
+        "attempt": "1 of 4",
+        "status": 429,
+        "waited so far": "0.0s"
+       },
+       "ref": "s_loop"
+      },
+      {
+       "caption": "429 is retryable. Check whether attempts are left.",
+       "nodes": [
+        "status",
+        "retry"
+       ],
+       "edges": [
+        "status-retry"
+       ],
+       "state": {
+        "attempt": "1 of 4",
+        "status": 429,
+        "waited so far": "0.0s"
+       },
+       "ref": "s_loop"
+      },
+      {
+       "caption": "Attempts left (1 of 4 used). Retry-After says 30s, but max_delay caps the wait at 8.0s.",
+       "nodes": [
+        "retry",
+        "wait"
+       ],
+       "edges": [
+        "retry-wait"
+       ],
+       "state": {
+        "attempt": "1 of 4",
+        "status": 429,
+        "waited so far": "0.0s"
+       },
+       "ref": "s_delay"
+      },
+      {
+       "caption": "Sleep 8.0s, then send the request again.",
+       "nodes": [
+        "wait",
+        "req"
+       ],
+       "edges": [
+        "wait-req"
+       ],
+       "state": {
+        "attempt": "1 of 4",
+        "status": 429,
+        "waited so far": "8.0s"
+       },
+       "ref": "s_loop"
+      },
+      {
+       "caption": "Attempt 2: the server answers 200.",
+       "nodes": [
+        "req",
+        "status"
+       ],
+       "edges": [
+        "req-status"
+       ],
+       "state": {
+        "attempt": "2 of 4",
+        "status": 200,
+        "waited so far": "8.0s"
+       },
+       "ref": "s_loop"
+      },
+      {
+       "caption": "Status 200: return the body.",
+       "nodes": [
+        "status",
+        "ok"
+       ],
+       "edges": [
+        "status-ok"
+       ],
+       "state": {
+        "attempt": "2 of 4",
+        "status": 200,
+        "waited so far": "8.0s",
+        "result": "body returned"
+       },
+       "ref": "s_loop"
+      }
+     ]
+    },
+    {
+     "name": "503 on every attempt",
+     "before": "raises FetchError (https://example.com/report returned 503), after 1 call",
+     "after": "4 calls, waits [0.5, 1.0, 2.0], raises FetchError",
+     "steps": [
+      {
+       "caption": "Attempt 1: the server answers 503.",
+       "nodes": [
+        "req",
+        "status"
+       ],
+       "edges": [
+        "req-status"
+       ],
+       "state": {
+        "attempt": "1 of 4",
+        "status": 503,
+        "waited so far": "0.0s"
+       },
+       "ref": "s_loop"
+      },
+      {
+       "caption": "503 is retryable. Check whether attempts are left.",
+       "nodes": [
+        "status",
+        "retry"
+       ],
+       "edges": [
+        "status-retry"
+       ],
+       "state": {
+        "attempt": "1 of 4",
+        "status": 503,
+        "waited so far": "0.0s"
+       },
+       "ref": "s_loop"
+      },
+      {
+       "caption": "Attempts left (1 of 4 used). backoff_delay(1) doubles from 0.5s, giving 0.5s.",
+       "nodes": [
+        "retry",
+        "wait"
+       ],
+       "edges": [
+        "retry-wait"
+       ],
+       "state": {
+        "attempt": "1 of 4",
+        "status": 503,
+        "waited so far": "0.0s"
+       },
+       "ref": "s_delay"
+      },
+      {
+       "caption": "Sleep 0.5s, then send the request again.",
+       "nodes": [
+        "wait",
+        "req"
+       ],
+       "edges": [
+        "wait-req"
+       ],
+       "state": {
+        "attempt": "1 of 4",
+        "status": 503,
+        "waited so far": "0.5s"
+       },
+       "ref": "s_loop"
+      },
+      {
+       "caption": "Attempt 2: the server answers 503.",
+       "nodes": [
+        "req",
+        "status"
+       ],
+       "edges": [
+        "req-status"
+       ],
+       "state": {
+        "attempt": "2 of 4",
+        "status": 503,
+        "waited so far": "0.5s"
+       },
+       "ref": "s_loop"
+      },
+      {
+       "caption": "503 is retryable. Check whether attempts are left.",
+       "nodes": [
+        "status",
+        "retry"
+       ],
+       "edges": [
+        "status-retry"
+       ],
+       "state": {
+        "attempt": "2 of 4",
+        "status": 503,
+        "waited so far": "0.5s"
+       },
+       "ref": "s_loop"
+      },
+      {
+       "caption": "Attempts left (2 of 4 used). backoff_delay(2) doubles from 0.5s, giving 1.0s.",
+       "nodes": [
+        "retry",
+        "wait"
+       ],
+       "edges": [
+        "retry-wait"
+       ],
+       "state": {
+        "attempt": "2 of 4",
+        "status": 503,
+        "waited so far": "0.5s"
+       },
+       "ref": "s_delay"
+      },
+      {
+       "caption": "Sleep 1.0s, then send the request again.",
+       "nodes": [
+        "wait",
+        "req"
+       ],
+       "edges": [
+        "wait-req"
+       ],
+       "state": {
+        "attempt": "2 of 4",
+        "status": 503,
+        "waited so far": "1.5s"
+       },
+       "ref": "s_loop"
+      },
+      {
+       "caption": "Attempt 3: the server answers 503.",
+       "nodes": [
+        "req",
+        "status"
+       ],
+       "edges": [
+        "req-status"
+       ],
+       "state": {
+        "attempt": "3 of 4",
+        "status": 503,
+        "waited so far": "1.5s"
+       },
+       "ref": "s_loop"
+      },
+      {
+       "caption": "503 is retryable. Check whether attempts are left.",
+       "nodes": [
+        "status",
+        "retry"
+       ],
+       "edges": [
+        "status-retry"
+       ],
+       "state": {
+        "attempt": "3 of 4",
+        "status": 503,
+        "waited so far": "1.5s"
+       },
+       "ref": "s_loop"
+      },
+      {
+       "caption": "Attempts left (3 of 4 used). backoff_delay(3) doubles from 0.5s, giving 2.0s.",
+       "nodes": [
+        "retry",
+        "wait"
+       ],
+       "edges": [
+        "retry-wait"
+       ],
+       "state": {
+        "attempt": "3 of 4",
+        "status": 503,
+        "waited so far": "1.5s"
+       },
+       "ref": "s_delay"
+      },
+      {
+       "caption": "Sleep 2.0s, then send the request again.",
+       "nodes": [
+        "wait",
+        "req"
+       ],
+       "edges": [
+        "wait-req"
+       ],
+       "state": {
+        "attempt": "3 of 4",
+        "status": 503,
+        "waited so far": "3.5s"
+       },
+       "ref": "s_loop"
+      },
+      {
+       "caption": "Attempt 4: the server answers 503.",
+       "nodes": [
+        "req",
+        "status"
+       ],
+       "edges": [
+        "req-status"
+       ],
+       "state": {
+        "attempt": "4 of 4",
+        "status": 503,
+        "waited so far": "3.5s"
+       },
+       "ref": "s_loop"
+      },
+      {
+       "caption": "503 is retryable. Check whether attempts are left.",
+       "nodes": [
+        "status",
+        "retry"
+       ],
+       "edges": [
+        "status-retry"
+       ],
+       "state": {
+        "attempt": "4 of 4",
+        "status": 503,
+        "waited so far": "3.5s"
+       },
+       "ref": "s_loop"
+      },
+      {
+       "caption": "No attempts left (4 of 4 used): raise FetchError instead of waiting.",
+       "nodes": [
+        "retry",
+        "raise"
+       ],
+       "edges": [
+        "retry-raise"
+       ],
+       "state": {
+        "attempt": "4 of 4",
+        "status": 503,
+        "waited so far": "3.5s",
+        "result": "FetchError, attempts=4"
+       },
+       "ref": "s_loop"
+      }
+     ]
+    },
+    {
+     "name": "404 Not Found",
+     "before": "raises FetchError (https://example.com/report returned 404), after 1 call",
+     "after": "1 calls, waits [], raises FetchError",
+     "steps": [
+      {
+       "caption": "Attempt 1: the server answers 404.",
+       "nodes": [
+        "req",
+        "status"
+       ],
+       "edges": [
+        "req-status"
+       ],
+       "state": {
+        "attempt": "1 of 4",
+        "status": 404,
+        "waited so far": "0.0s"
+       },
+       "ref": "s_loop"
+      },
+      {
+       "caption": "404 is not retryable, so raise FetchError right away (attempts=1).",
+       "nodes": [
+        "status",
+        "raise"
+       ],
+       "edges": [
+        "status-raise"
+       ],
+       "state": {
+        "attempt": "1 of 4",
+        "status": 404,
+        "waited so far": "0.0s",
+        "result": "FetchError, attempts=1"
+       },
+       "ref": "s_loop"
+      }
+     ]
+    }
+   ],
+   "type": "stepper",
+   "title": "What happens to one request",
+   "caption": "Values come from running both versions of the sample code. Step through a case; each step loads the matching code."
+  },
+  "waits": {
+   "type": "chart",
+   "title": "Wait after each failed attempt",
+   "caption": "Without a Retry-After header, from running backoff_delay for attempts 1 to 6. The wait doubles, then stops at the 8 second cap.",
+   "unit": "s",
+   "bars": [
+    {
+     "label": "attempt 1",
+     "value": 0.5
+    },
+    {
+     "label": "attempt 2",
+     "value": 1.0
+    },
+    {
+     "label": "attempt 3",
+     "value": 2.0
+    },
+    {
+     "label": "attempt 4",
+     "value": 4.0
+    },
+    {
+     "label": "attempt 5",
+     "value": 8.0
+    },
+    {
+     "label": "attempt 6",
+     "value": 8.0
+    }
+   ]
+  }
+ },
+ "quiz": [
+  {
+   "prompt": "Why does backoff_delay limit a server's Retry-After value to max_delay?",
+   "options": [
+    "The HTTP specification does not allow Retry-After values above 8 seconds.",
+    "A server could ask for a very long wait, so the cap bounds each attempt's stall.",
+    "Retry-After arrives in milliseconds, so the cap converts it to a usable range.",
+    "The cap makes the retry loop stop early, before it can reach max_attempts."
+   ],
+   "correct": 1,
+   "explain": "The cap bounds the worst case wait per attempt. In the 30 second case the function waits 8.0 seconds.",
+   "ref": "s_delay"
+  },
+  {
+   "prompt": "The server answers 503 on all four attempts. What happens?",
+   "options": [
+    "Four waits happen, then FetchError is raised after the fourth attempt.",
+    "The function gives up quietly and returns None after the fourth attempt.",
+    "FetchError is raised after the third attempt, with attempts equal to 3.",
+    "Three waits of 0.5s, 1.0s, and 2.0s happen, then FetchError has attempts=4."
+   ],
+   "correct": 3,
+   "explain": "The loop raises on the last attempt instead of sleeping, so there are three waits for four attempts. This is the 503 on every attempt case in the stepper.",
+   "ref": "s_loop"
+  },
+  {
+   "prompt": "The server answers 404 on the first request. What does fetch_page do?",
+   "options": [
+    "It raises FetchError(attempts=1) immediately, without any wait.",
+    "It retries up to four times, because any failure may be transient.",
+    "It waits 0.5s once, then raises FetchError on the second try.",
+    "It returns the response body so the caller can inspect the status."
+   ],
+   "correct": 0,
+   "explain": "404 is outside RETRYABLE, so the loop raises on the first attempt. The test for a 500 asserts one call and attempts equal to 1.",
+   "ref": "s_loop"
+  },
+  {
+   "prompt": "What does the sleep argument of fetch_page make possible?",
+   "options": [
+    "Callers can disable retries by passing None.",
+    "The retry loop can run on several threads at once.",
+    "Tests can record the waits and skip real delays.",
+    "The wait can switch from seconds to milliseconds."
+   ],
+   "correct": 2,
+   "explain": "The tests pass waits.append as sleep, so they assert the exact wait sequence and finish instantly.",
+   "ref": "s_test_giveup"
+  },
+  {
+   "prompt": "With no Retry-After header, what wait does backoff_delay(6) return?",
+   "options": [
+    "16.0 seconds, because the doubling keeps going.",
+    "8.0 seconds, because 16.0 is limited to max_delay.",
+    "4.0 seconds, because the sequence resets after five attempts.",
+    "0.5 seconds, because base applies to every attempt."
+   ],
+   "correct": 1,
+   "explain": "The uncapped value would be 0.5 * 2**5 = 16.0. The cap limits it to 8.0. The test for growth asserts 0.5, 1.0, 2.0, 4.0, 8.0, 8.0.",
+   "ref": "s_delay"
+  }
+ ]
+}

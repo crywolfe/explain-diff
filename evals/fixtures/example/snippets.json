@@ -1,0 +1,813 @@
+{
+ "s_retryable": {
+  "file": "pagefetch/client.py",
+  "oldStart": 1,
+  "oldEnd": 5,
+  "newStart": 3,
+  "newEnd": 3,
+  "lines": [
+   {
+    "old": null,
+    "new": 1,
+    "kind": "add",
+    "text": "import time"
+   },
+   {
+    "old": null,
+    "new": 2,
+    "kind": "add",
+    "text": ""
+   },
+   {
+    "old": null,
+    "new": 3,
+    "kind": "add",
+    "text": "RETRYABLE = {429, 503}",
+    "focus": true
+   },
+   {
+    "old": null,
+    "new": 4,
+    "kind": "add",
+    "text": ""
+   },
+   {
+    "old": null,
+    "new": 5,
+    "kind": "add",
+    "text": ""
+   },
+   {
+    "old": 1,
+    "new": 6,
+    "kind": "ctx",
+    "text": "class FetchError(Exception):"
+   },
+   {
+    "old": 2,
+    "new": null,
+    "kind": "del",
+    "text": "    pass"
+   },
+   {
+    "old": null,
+    "new": 7,
+    "kind": "add",
+    "text": "    def __init__(self, message, attempts=1):"
+   },
+   {
+    "old": null,
+    "new": 8,
+    "kind": "add",
+    "text": "        super().__init__(message)"
+   },
+   {
+    "old": null,
+    "new": 9,
+    "kind": "add",
+    "text": "        self.attempts = attempts"
+   },
+   {
+    "old": null,
+    "new": 10,
+    "kind": "add",
+    "text": ""
+   },
+   {
+    "old": null,
+    "new": 11,
+    "kind": "add",
+    "text": ""
+   },
+   {
+    "old": null,
+    "new": 12,
+    "kind": "add",
+    "text": "def backoff_delay(attempt, retry_after=None, base=0.5, max_delay=8.0):"
+   },
+   {
+    "old": null,
+    "new": 13,
+    "kind": "add",
+    "text": "    \"\"\"Seconds to wait after a failed attempt (attempt starts at 1).\"\"\""
+   },
+   {
+    "old": null,
+    "new": 14,
+    "kind": "add",
+    "text": "    if retry_after is not None:"
+   },
+   {
+    "old": null,
+    "new": 15,
+    "kind": "add",
+    "text": "        return min(retry_after, max_delay)"
+   },
+   {
+    "old": null,
+    "new": 16,
+    "kind": "add",
+    "text": "    return min(base * 2 ** (attempt - 1), max_delay)"
+   },
+   {
+    "old": 3,
+    "new": 17,
+    "kind": "ctx",
+    "text": ""
+   },
+   {
+    "old": 4,
+    "new": 18,
+    "kind": "ctx",
+    "text": ""
+   },
+   {
+    "old": 5,
+    "new": null,
+    "kind": "del",
+    "text": "def fetch_page(url, session):"
+   }
+  ]
+ },
+ "s_error": {
+  "file": "pagefetch/client.py",
+  "oldStart": 1,
+  "oldEnd": 5,
+  "newStart": 6,
+  "newEnd": 9,
+  "lines": [
+   {
+    "old": null,
+    "new": 1,
+    "kind": "add",
+    "text": "import time"
+   },
+   {
+    "old": null,
+    "new": 2,
+    "kind": "add",
+    "text": ""
+   },
+   {
+    "old": null,
+    "new": 3,
+    "kind": "add",
+    "text": "RETRYABLE = {429, 503}"
+   },
+   {
+    "old": null,
+    "new": 4,
+    "kind": "add",
+    "text": ""
+   },
+   {
+    "old": null,
+    "new": 5,
+    "kind": "add",
+    "text": ""
+   },
+   {
+    "old": 1,
+    "new": 6,
+    "kind": "ctx",
+    "text": "class FetchError(Exception):",
+    "focus": true
+   },
+   {
+    "old": 2,
+    "new": null,
+    "kind": "del",
+    "text": "    pass",
+    "focus": true
+   },
+   {
+    "old": null,
+    "new": 7,
+    "kind": "add",
+    "text": "    def __init__(self, message, attempts=1):",
+    "focus": true
+   },
+   {
+    "old": null,
+    "new": 8,
+    "kind": "add",
+    "text": "        super().__init__(message)",
+    "focus": true
+   },
+   {
+    "old": null,
+    "new": 9,
+    "kind": "add",
+    "text": "        self.attempts = attempts",
+    "focus": true
+   },
+   {
+    "old": null,
+    "new": 10,
+    "kind": "add",
+    "text": ""
+   },
+   {
+    "old": null,
+    "new": 11,
+    "kind": "add",
+    "text": ""
+   },
+   {
+    "old": null,
+    "new": 12,
+    "kind": "add",
+    "text": "def backoff_delay(attempt, retry_after=None, base=0.5, max_delay=8.0):"
+   },
+   {
+    "old": null,
+    "new": 13,
+    "kind": "add",
+    "text": "    \"\"\"Seconds to wait after a failed attempt (attempt starts at 1).\"\"\""
+   },
+   {
+    "old": null,
+    "new": 14,
+    "kind": "add",
+    "text": "    if retry_after is not None:"
+   },
+   {
+    "old": null,
+    "new": 15,
+    "kind": "add",
+    "text": "        return min(retry_after, max_delay)"
+   },
+   {
+    "old": null,
+    "new": 16,
+    "kind": "add",
+    "text": "    return min(base * 2 ** (attempt - 1), max_delay)"
+   },
+   {
+    "old": 3,
+    "new": 17,
+    "kind": "ctx",
+    "text": ""
+   },
+   {
+    "old": 4,
+    "new": 18,
+    "kind": "ctx",
+    "text": ""
+   },
+   {
+    "old": 5,
+    "new": null,
+    "kind": "del",
+    "text": "def fetch_page(url, session):"
+   }
+  ]
+ },
+ "s_delay": {
+  "file": "pagefetch/client.py",
+  "oldStart": 1,
+  "oldEnd": 9,
+  "newStart": 12,
+  "newEnd": 16,
+  "lines": [
+   {
+    "old": null,
+    "new": 5,
+    "kind": "add",
+    "text": ""
+   },
+   {
+    "old": 1,
+    "new": 6,
+    "kind": "ctx",
+    "text": "class FetchError(Exception):"
+   },
+   {
+    "old": 2,
+    "new": null,
+    "kind": "del",
+    "text": "    pass"
+   },
+   {
+    "old": null,
+    "new": 7,
+    "kind": "add",
+    "text": "    def __init__(self, message, attempts=1):"
+   },
+   {
+    "old": null,
+    "new": 8,
+    "kind": "add",
+    "text": "        super().__init__(message)"
+   },
+   {
+    "old": null,
+    "new": 9,
+    "kind": "add",
+    "text": "        self.attempts = attempts"
+   },
+   {
+    "old": null,
+    "new": 10,
+    "kind": "add",
+    "text": ""
+   },
+   {
+    "old": null,
+    "new": 11,
+    "kind": "add",
+    "text": ""
+   },
+   {
+    "old": null,
+    "new": 12,
+    "kind": "add",
+    "text": "def backoff_delay(attempt, retry_after=None, base=0.5, max_delay=8.0):",
+    "focus": true
+   },
+   {
+    "old": null,
+    "new": 13,
+    "kind": "add",
+    "text": "    \"\"\"Seconds to wait after a failed attempt (attempt starts at 1).\"\"\"",
+    "focus": true
+   },
+   {
+    "old": null,
+    "new": 14,
+    "kind": "add",
+    "text": "    if retry_after is not None:",
+    "focus": true
+   },
+   {
+    "old": null,
+    "new": 15,
+    "kind": "add",
+    "text": "        return min(retry_after, max_delay)",
+    "focus": true
+   },
+   {
+    "old": null,
+    "new": 16,
+    "kind": "add",
+    "text": "    return min(base * 2 ** (attempt - 1), max_delay)",
+    "focus": true
+   },
+   {
+    "old": 3,
+    "new": 17,
+    "kind": "ctx",
+    "text": ""
+   },
+   {
+    "old": 4,
+    "new": 18,
+    "kind": "ctx",
+    "text": ""
+   },
+   {
+    "old": 5,
+    "new": null,
+    "kind": "del",
+    "text": "def fetch_page(url, session):"
+   },
+   {
+    "old": 6,
+    "new": null,
+    "kind": "del",
+    "text": "    resp = session.get(url)"
+   },
+   {
+    "old": 7,
+    "new": null,
+    "kind": "del",
+    "text": "    if resp.status != 200:"
+   },
+   {
+    "old": 8,
+    "new": null,
+    "kind": "del",
+    "text": "        raise FetchError(f\"{url} returned {resp.status}\")"
+   },
+   {
+    "old": 9,
+    "new": null,
+    "kind": "del",
+    "text": "    return resp.body"
+   }
+  ]
+ },
+ "s_loop": {
+  "file": "pagefetch/client.py",
+  "oldStart": 4,
+  "oldEnd": 9,
+  "newStart": 19,
+  "newEnd": 32,
+  "lines": [
+   {
+    "old": 4,
+    "new": 18,
+    "kind": "ctx",
+    "text": ""
+   },
+   {
+    "old": 5,
+    "new": null,
+    "kind": "del",
+    "text": "def fetch_page(url, session):"
+   },
+   {
+    "old": 6,
+    "new": null,
+    "kind": "del",
+    "text": "    resp = session.get(url)"
+   },
+   {
+    "old": 7,
+    "new": null,
+    "kind": "del",
+    "text": "    if resp.status != 200:"
+   },
+   {
+    "old": 8,
+    "new": null,
+    "kind": "del",
+    "text": "        raise FetchError(f\"{url} returned {resp.status}\")"
+   },
+   {
+    "old": 9,
+    "new": null,
+    "kind": "del",
+    "text": "    return resp.body"
+   },
+   {
+    "old": null,
+    "new": 19,
+    "kind": "add",
+    "text": "def fetch_page(url, session, max_attempts=4, sleep=time.sleep):",
+    "focus": true
+   },
+   {
+    "old": null,
+    "new": 20,
+    "kind": "add",
+    "text": "    for attempt in range(1, max_attempts + 1):",
+    "focus": true
+   },
+   {
+    "old": null,
+    "new": 21,
+    "kind": "add",
+    "text": "        resp = session.get(url)",
+    "focus": true
+   },
+   {
+    "old": null,
+    "new": 22,
+    "kind": "add",
+    "text": "        if resp.status == 200:",
+    "focus": true
+   },
+   {
+    "old": null,
+    "new": 23,
+    "kind": "add",
+    "text": "            return resp.body",
+    "focus": true
+   },
+   {
+    "old": null,
+    "new": 24,
+    "kind": "add",
+    "text": "        if resp.status not in RETRYABLE:",
+    "focus": true
+   },
+   {
+    "old": null,
+    "new": 25,
+    "kind": "add",
+    "text": "            raise FetchError(f\"{url} returned {resp.status}\", attempts=attempt)",
+    "focus": true
+   },
+   {
+    "old": null,
+    "new": 26,
+    "kind": "add",
+    "text": "        if attempt == max_attempts:",
+    "focus": true
+   },
+   {
+    "old": null,
+    "new": 27,
+    "kind": "add",
+    "text": "            raise FetchError(",
+    "focus": true
+   },
+   {
+    "old": null,
+    "new": 28,
+    "kind": "add",
+    "text": "                f\"{url} still {resp.status} after {attempt} attempts\",",
+    "focus": true
+   },
+   {
+    "old": null,
+    "new": 29,
+    "kind": "add",
+    "text": "                attempts=attempt,",
+    "focus": true
+   },
+   {
+    "old": null,
+    "new": 30,
+    "kind": "add",
+    "text": "            )",
+    "focus": true
+   },
+   {
+    "old": null,
+    "new": 31,
+    "kind": "add",
+    "text": "        header = resp.headers.get(\"Retry-After\")",
+    "focus": true
+   },
+   {
+    "old": null,
+    "new": 32,
+    "kind": "add",
+    "text": "        sleep(backoff_delay(attempt, float(header) if header else None))",
+    "focus": true
+   }
+  ]
+ },
+ "s_test_cap": {
+  "file": "tests/test_client.py",
+  "oldStart": 0,
+  "oldEnd": 0,
+  "newStart": 43,
+  "newEnd": 47,
+  "lines": [
+   {
+    "old": null,
+    "new": 35,
+    "kind": "add",
+    "text": ""
+   },
+   {
+    "old": null,
+    "new": 36,
+    "kind": "add",
+    "text": "def test_retries_503_then_succeeds():"
+   },
+   {
+    "old": null,
+    "new": 37,
+    "kind": "add",
+    "text": "    waits = []"
+   },
+   {
+    "old": null,
+    "new": 38,
+    "kind": "add",
+    "text": "    session = FakeSession([Resp(503), Resp(503), Resp(200, \"ok\")])"
+   },
+   {
+    "old": null,
+    "new": 39,
+    "kind": "add",
+    "text": "    assert fetch_page(\"http://x/a\", session, sleep=waits.append) == \"ok\""
+   },
+   {
+    "old": null,
+    "new": 40,
+    "kind": "add",
+    "text": "    assert waits == [0.5, 1.0]"
+   },
+   {
+    "old": null,
+    "new": 41,
+    "kind": "add",
+    "text": ""
+   },
+   {
+    "old": null,
+    "new": 42,
+    "kind": "add",
+    "text": ""
+   },
+   {
+    "old": null,
+    "new": 43,
+    "kind": "add",
+    "text": "def test_retry_after_is_capped():",
+    "focus": true
+   },
+   {
+    "old": null,
+    "new": 44,
+    "kind": "add",
+    "text": "    waits = []",
+    "focus": true
+   },
+   {
+    "old": null,
+    "new": 45,
+    "kind": "add",
+    "text": "    session = FakeSession([Resp(429, headers={\"Retry-After\": \"30\"}), Resp(200, \"ok\")])",
+    "focus": true
+   },
+   {
+    "old": null,
+    "new": 46,
+    "kind": "add",
+    "text": "    fetch_page(\"http://x/a\", session, sleep=waits.append)",
+    "focus": true
+   },
+   {
+    "old": null,
+    "new": 47,
+    "kind": "add",
+    "text": "    assert waits == [8.0]",
+    "focus": true
+   },
+   {
+    "old": null,
+    "new": 48,
+    "kind": "add",
+    "text": ""
+   },
+   {
+    "old": null,
+    "new": 49,
+    "kind": "add",
+    "text": ""
+   },
+   {
+    "old": null,
+    "new": 50,
+    "kind": "add",
+    "text": "def test_gives_up_after_max_attempts():"
+   },
+   {
+    "old": null,
+    "new": 51,
+    "kind": "add",
+    "text": "    waits = []"
+   },
+   {
+    "old": null,
+    "new": 52,
+    "kind": "add",
+    "text": "    session = FakeSession([Resp(503)] * 4)"
+   },
+   {
+    "old": null,
+    "new": 53,
+    "kind": "add",
+    "text": "    with pytest.raises(FetchError) as err:"
+   },
+   {
+    "old": null,
+    "new": 54,
+    "kind": "add",
+    "text": "        fetch_page(\"http://x/a\", session, sleep=waits.append)"
+   }
+  ]
+ },
+ "s_test_giveup": {
+  "file": "tests/test_client.py",
+  "oldStart": 0,
+  "oldEnd": 0,
+  "newStart": 50,
+  "newEnd": 56,
+  "lines": [
+   {
+    "old": null,
+    "new": 41,
+    "kind": "add",
+    "text": ""
+   },
+   {
+    "old": null,
+    "new": 42,
+    "kind": "add",
+    "text": ""
+   },
+   {
+    "old": null,
+    "new": 43,
+    "kind": "add",
+    "text": "def test_retry_after_is_capped():"
+   },
+   {
+    "old": null,
+    "new": 44,
+    "kind": "add",
+    "text": "    waits = []"
+   },
+   {
+    "old": null,
+    "new": 45,
+    "kind": "add",
+    "text": "    session = FakeSession([Resp(429, headers={\"Retry-After\": \"30\"}), Resp(200, \"ok\")])"
+   },
+   {
+    "old": null,
+    "new": 46,
+    "kind": "add",
+    "text": "    fetch_page(\"http://x/a\", session, sleep=waits.append)"
+   },
+   {
+    "old": null,
+    "new": 47,
+    "kind": "add",
+    "text": "    assert waits == [8.0]"
+   },
+   {
+    "old": null,
+    "new": 48,
+    "kind": "add",
+    "text": ""
+   },
+   {
+    "old": null,
+    "new": 49,
+    "kind": "add",
+    "text": ""
+   },
+   {
+    "old": null,
+    "new": 50,
+    "kind": "add",
+    "text": "def test_gives_up_after_max_attempts():",
+    "focus": true
+   },
+   {
+    "old": null,
+    "new": 51,
+    "kind": "add",
+    "text": "    waits = []",
+    "focus": true
+   },
+   {
+    "old": null,
+    "new": 52,
+    "kind": "add",
+    "text": "    session = FakeSession([Resp(503)] * 4)",
+    "focus": true
+   },
+   {
+    "old": null,
+    "new": 53,
+    "kind": "add",
+    "text": "    with pytest.raises(FetchError) as err:",
+    "focus": true
+   },
+   {
+    "old": null,
+    "new": 54,
+    "kind": "add",
+    "text": "        fetch_page(\"http://x/a\", session, sleep=waits.append)",
+    "focus": true
+   },
+   {
+    "old": null,
+    "new": 55,
+    "kind": "add",
+    "text": "    assert err.value.attempts == 4",
+    "focus": true
+   },
+   {
+    "old": null,
+    "new": 56,
+    "kind": "add",
+    "text": "    assert waits == [0.5, 1.0, 2.0]",
+    "focus": true
+   },
+   {
+    "old": null,
+    "new": 57,
+    "kind": "add",
+    "text": ""
+   },
+   {
+    "old": null,
+    "new": 58,
+    "kind": "add",
+    "text": ""
+   },
+   {
+    "old": null,
+    "new": 59,
+    "kind": "add",
+    "text": "def test_delay_grows_then_caps():"
+   },
+   {
+    "old": null,
+    "new": 60,
+    "kind": "add",
+    "text": "    assert [backoff_delay(n) for n in range(1, 7)] == [0.5, 1.0, 2.0, 4.0, 8.0, 8.0]"
+   }
+  ]
+ }
+}

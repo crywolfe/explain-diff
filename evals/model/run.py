@@ -46,7 +46,9 @@ with open(os.environ["ED_EVAL_GH_LOG"], "a") as f:
     f.write(json.dumps({"args": args}) + "\n")
 if args[:2] == ["pr", "view"]:
     print(json.dumps({"number": 7, "title": os.environ.get("ED_EVAL_PR_TITLE", "Change"), "body": os.environ.get("ED_EVAL_PR_BODY", ""),
-                      "headRefName": os.environ["ED_EVAL_BRANCH"], "baseRefName": "main", "state": "OPEN", "comments": [], "reviews": []}))
+                      "headRefName": os.environ["ED_EVAL_BRANCH"], "baseRefName": "main", "state": "OPEN", "comments": [], "reviews": [],
+                      "headRefOid": subprocess.run(["git", "rev-parse", os.environ["ED_EVAL_BRANCH"]], capture_output=True, text=True).stdout.strip(),
+                      "url": "https://github.com/example/repo/pull/7", "isCrossRepository": False, "mergeCommit": None}))
 elif args[:2] == ["pr", "diff"]:
     print(subprocess.run(["git", "diff", "main..." + os.environ["ED_EVAL_BRANCH"]], capture_output=True, text=True).stdout)
 elif args[:2] == ["pr", "checks"]:
