@@ -327,6 +327,7 @@ def main():
     ap.add_argument("--base", help="compare against this ref instead of the default branch or PR base")
     ap.add_argument("--no-fetch", action="store_true", help="do not fetch the remote first")
     ap.add_argument("--out", help="also write the JSON here")
+    ap.add_argument("--quiz", help=argparse.SUPPRESS)  # the skill's quiz-length option; accepted here so a leftover one is harmless
     a = ap.parse_args()
     try:
         res = resolve(a.target, a.base, not a.no_fetch)

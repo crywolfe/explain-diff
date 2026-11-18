@@ -282,8 +282,8 @@ def static_checks(path, canaries):
             add("S10-quiz", "WARN", "could not read the correct answer positions; check by hand")
             quiz = None
     if quiz is not None:
-        if len(quiz) != 5:
-            msgs.append(f"{len(quiz)} questions")
+        if not 3 <= len(quiz) <= 10:
+            msgs.append(f"{len(quiz)} questions (3 to 10)")
         pos = idx
         if len(set(pos)) < 3:
             msgs.append(f"correct positions too uniform {pos}")
@@ -484,7 +484,8 @@ def gate_dynamic(pg):
     else:
         try:
             a = json.loads(o["attestation"])
-            if a.get("quiz", {}).get("correct") != 5 or a.get("source") != "explain-diff":
+            aq = a.get("quiz", {})
+            if not aq.get("of") or aq.get("correct") != aq.get("of") or a.get("source") != "explain-diff":
                 msgs.append("attestation lacks the quiz score or source")
         except ValueError:
             msgs.append("no attestation JSON when passed")

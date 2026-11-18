@@ -10,6 +10,7 @@ Run from the repository root. Browser parts need Playwright; uv supplies a pinne
 ```
 uv run -q --with playwright==1.65.2 python3 evals/template_test.py
 python3 evals/target_test.py
+python3 evals/facts_test.py
 uv run -q --with playwright==1.65.2 python3 evals/hostile_snippet_test.py
 python3 evals/model/test_graders.py
 python3 evals/model/run.py --dry-run --all --out "$(mktemp -d)"

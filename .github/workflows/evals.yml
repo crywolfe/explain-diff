@@ -55,6 +55,8 @@ jobs:
         run: python3 evals/model/test_graders.py
       - name: Target resolution
         run: python3 evals/target_test.py
+      - name: Facts and risk hints
+        run: python3 evals/facts_test.py
       - name: Page template and build script
         run: python3 evals/template_test.py
       - name: Hostile snippets, validator self test, gate behavior
