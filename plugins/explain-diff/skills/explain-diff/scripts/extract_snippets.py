@@ -154,7 +154,7 @@ def hunks(rows):
         adds = sum(1 for r in seg if r["kind"] == "add")
         dels = sum(1 for r in seg if r["kind"] == "del")
         pure_del = adds == 0
-        res.append({"old": pure_del, "a": min(olds) if pure_del else min(news), "b": max(olds) if pure_del else max(news),
+        res.append({"old": pure_del, "a": min(olds) if pure_del else min(news), "b": max(olds) if pure_del else max(news), "start": s, "end": e,
                     "additions": adds, "deletions": dels, "first": next((r["text"].strip() for r in seg if r["kind"] != "ctx" and r["text"].strip()), "")})
     return res
 

@@ -8,6 +8,7 @@ This folder tests the skill's output and its handling of hostile input. It follo
 | --- | --- |
 | `validate_page.py` | A shim for `plugins/explain-diff/skills/explain-diff/scripts/validate_page.py`, which ships with the skill so installed copies can run it. Static and browser checks for any page the skill produces. S16 checks the target line and the base in the gate data. Blocks all network access while the page loads. S14 checks the governance data (controls listed, none marked by the page, documents only from `docs/governance/`); S15 checks the gate markup; D6 drives the quiz and governance marks in a browser and checks every gate state. |
 | `hostile_snippet_test.py` | Tests the page template and the validator. Runs offline. |
+| `facts_test.py` | Tests `gather_facts.py` on a throwaway repository: risk hints for CI, auth, dependency, docs, test and config files, changed function names, candidate tests (and no unrelated ones), commits, and uncommitted changes. |
 | `template_test.py` | Builds pages with the skill's `build_page.py`: the example, one with every visualization type, one with hostile text in every field, and three that must stop with a content error. |
 | `target_test.py` | Tests `resolve_target.py` on throwaway repositories: a stale local `main`, branch, commit, ranges, uncommitted changes, an ambiguous clean default branch, a merged branch, and a pull request through the eval `gh` shim. |
 | `fixtures/example/` | The sample target and snippets that, with `templates/content.example.json`, build `docs/example-explanation.html`. |
@@ -21,6 +22,7 @@ Requires Python 3 and Playwright with Chromium (`pip install playwright`, then `
 
 ```
 python3 evals/target_test.py
+python3 evals/facts_test.py
 python3 evals/template_test.py
 python3 evals/hostile_snippet_test.py
 python3 evals/validate_page.py docs/example-explanation.html --browser --canary evil.example --canary __pwned

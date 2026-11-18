@@ -97,6 +97,8 @@ def main():
     check("branch name target", d["mode"] == "branch" and d["mergeBase"] == split, d["summary"])
 
     rc, d = resolve(repo, "HEAD", env=env)
+    rc2, d2 = resolve(repo, "HEAD", "--quiz", "8", env=env)
+    check("a leftover --quiz N does not change the target", rc2 == rc and d2.get("head") == d.get("head"), str(d2)[:160])
     check("commit target: that commit against its parent", d["mode"] == "commit" and d["head"]["sha"] == feat and d["base"]["sha"] == split, d["summary"])
 
     # A short sha made only of digits is a commit, not PR #<digits>.

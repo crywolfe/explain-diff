@@ -47,6 +47,9 @@ UNDO_LABEL = {"flag": "Flag", "revert": "Clean revert", "careful": "Needs care",
 CI_LABEL = {"pass": "passing", "fail": "failing", "pending": "pending", "unknown": "unknown (could not read it)", "none": "no checks on this change"}
 
 
+QUIZ_MIN, QUIZ_MAX = 3, 10  # quiz length range; the skill's argument --quiz N picks within it, 5 by default
+WORDS = {3: "three", 4: "four", 5: "five", 6: "six", 7: "seven", 8: "eight", 9: "nine", 10: "ten"}
+
 class Build:
     def __init__(self, content, target, snippets):
         self.c, self.t, self.snip = content, target, snippets
@@ -374,11 +377,12 @@ class Build:
         gov = f"<li>Governance: 0 of {n} controls marked</li>" if self.c["governance"].get("present") else \
             "<li>Governance: no governance documents in docs/governance/, so the gate needs the quiz only.</li>"
         q = len(self.c.get("quiz", []))
+        all_q = f"all {WORDS.get(q, q)}"
         return ('<section><h2 id="quiz">Quiz</h2>\n<button type="button" class="btn" id="quiz-open" aria-expanded="false">Test yourself</button> '
                 '<button type="button" class="btn" id="quiz-reset">Retake quiz</button>\n'
-                '<p class="assume">Each question locks after your first answer. The Gate needs all five right in one attempt. Retake clears your answers and shuffles the options.</p>\n'
+                '<p class="assume">Each question locks after your first answer. The Gate needs ' + all_q + ' right in one attempt. Retake clears your answers and shuffles the options.</p>\n'
                 '<div id="quiz-host" hidden></div></section>\n'
-                '<section><h2 id="gate">Gate</h2>\n<p>The gate opens when all five quiz answers are right in one attempt and every governance control is marked, with none Not met. '
+                '<section><h2 id="gate">Gate</h2>\n<p>The gate opens when ' + all_q + ' quiz answers are right in one attempt and every governance control is marked, with none Not met. '
                 'It checks that you finished both; it is not a security control, and this page cannot change the pull request.</p>\n'
                 f'<div id="gate-status" data-state="blocked" role="status" aria-live="polite"><strong id="gate-label">Blocked</strong><ul id="gate-reasons"><li>Quiz: 0 of {q} answered</li>{gov}</ul></div>\n'
                 '<div class="gate-actions"><button type="button" class="btn" id="gate-retake" hidden>Retake quiz</button><button type="button" class="btn" id="remediate" hidden>Remediation</button></div>\n'
@@ -389,8 +393,11 @@ class Build:
     # ---- checks ----
     def check_quiz(self):
         quiz = self.c.get("quiz", [])
-        if len(quiz) != 5:
-            self.errors.append(f"quiz has {len(quiz)} questions (exactly 5)")
+        want = self.c.get("quizCount", 5)
+        if not isinstance(want, int) or isinstance(want, bool) or not QUIZ_MIN <= want <= QUIZ_MAX:
+            self.errors.append(f"quizCount must be a whole number from {QUIZ_MIN} to {QUIZ_MAX}")
+        elif len(quiz) != want:
+            self.errors.append(f"quiz has {len(quiz)} questions (quizCount is {want})")
         for i, q in enumerate(quiz, 1):
             if not isinstance(q.get("correct"), int) or not 0 <= q["correct"] < len(q.get("options", [])):
                 self.errors.append(f"quiz question {i}: correct must be an index into options")

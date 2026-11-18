@@ -210,6 +210,24 @@ def main():
     rc, log, _ = build("bad-quiz", c)
     check("four quiz questions stop the build", rc != 0 and "4 questions" in log, log.strip()[-120:])
     c = base_content()
+    c["quiz"], c["quizCount"] = c["quiz"][:3], 3
+    rc, log, page = build("quiz-three", c)
+    check("quizCount 3 with three questions builds", rc == 0, log.strip()[-160:])
+    if rc == 0:
+        html = open(page, encoding="utf-8").read()
+        check("the page says all three, not all five", "all three" in html and "all five" not in html, "")
+        res = V.run(page, browser=not STATIC, canaries=CANARIES)
+        check("a three-question page validates, gate included", not fails(res), str(fails(res)))
+    c = base_content()
+    c["quizCount"] = 8
+    rc, log, _ = build("quiz-mismatch", c)
+    check("five questions with quizCount 8 stop the build", rc != 0 and "quizCount is 8" in log, log.strip()[-120:])
+    for bad in (2, 11, "5", True):
+        c = base_content()
+        c["quizCount"] = bad
+        rc, log, _ = build("quiz-range", c)
+        check(f"quizCount {bad!r} stops the build", rc != 0 and "3 to 10" in log, log.strip()[-120:])
+    c = base_content()
     c["intent"]["what"] = "a bare string"
     rc, log, _ = build("bad-shape", c)
     check("malformed content is a content error, not a traceback", rc != 0 and "content errors" in log and "Traceback" not in log, log.strip()[-160:])
