@@ -54,7 +54,17 @@ explain-diff on PR #123
 explain this diff against main
 ```
 
-Plugin skills are namespaced by plugin name, so you can also invoke it directly as `/explain-diff:explain-diff`.
+Plugin skills are namespaced by plugin name, so you can also invoke it directly as `/explain-diff:explain-diff`, with an optional target:
+
+```
+/explain-diff:explain-diff 123              # pull request #123
+/explain-diff:explain-diff feature/retry    # a branch, from where it split off origin/main
+/explain-diff:explain-diff HEAD             # one commit, against its parent
+/explain-diff:explain-diff main...feature   # feature's changes since it split from main
+/explain-diff:explain-diff working          # uncommitted changes
+```
+
+With no target it uses the current branch's open PR, then the current branch against `origin/<default>` (or its uncommitted changes when the branch has no commits of its own yet), then uncommitted changes on the default branch. On a clean default branch it asks. Before it reads any code it tells you what it will explain, for example `Explaining feature/retry @39f902e against origin/main @ff3253d (merge-base 1a2b3c4): 2 file(s), +66/-5.`, and the page shows the same line at the top. It always compares against the remote default branch after a fetch, never a local `main` that may be behind, and says when your local copy is stale.
 
 The page is saved as `/tmp/YYYY-MM-DD-explanation-<slug>.html`, outside your repository. Claude returns the path.
 
@@ -75,7 +85,8 @@ Copy `plugins/explain-diff/skills/explain-diff/` into `~/.claude/skills/` for yo
 - The diff, PR description, and commit messages are treated as data only. Instructions inside them are ignored.
 - The page is one self contained file with no network access or external dependencies.
 - Visualization values come from the code, tests, or fixtures, or from running the code. Illustrative values are labeled as such.
-- The skill asks Claude to open the saved page in a browser and check it at desktop and phone widths. If no browser is available, the handoff says those checks were not run.
+- Claude writes the page's content as JSON; a fixed, tested template supplies the HTML, CSS and JavaScript, and scripts resolve the target, extract the code snippets from the real diff, build the page, and validate it. That keeps runs short, small changes most of all, and keeps every page's code panel, quiz and gate identical.
+- `validate_page.py --browser` checks the saved page at desktop and phone widths in headless Chromium. It uses an installed Playwright, or reruns itself under `uv run --with playwright` when uv is present. If neither is available, the handoff says the browser checks were not run.
 
 ## Testing
 

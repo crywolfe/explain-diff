@@ -6,8 +6,11 @@ This folder tests the skill's output and its handling of hostile input. It follo
 
 | File | Purpose |
 | --- | --- |
-| `validate_page.py` | Static and browser checks for any page the skill produces. Blocks all network access while the page loads. S14 checks the governance data (controls listed, none marked by the page, documents only from `docs/governance/`); S15 checks the gate markup; D6 drives the quiz and governance marks in a browser and checks every gate state. |
+| `validate_page.py` | A shim for `plugins/explain-diff/skills/explain-diff/scripts/validate_page.py`, which ships with the skill so installed copies can run it. Static and browser checks for any page the skill produces. S16 checks the target line and the base in the gate data. Blocks all network access while the page loads. S14 checks the governance data (controls listed, none marked by the page, documents only from `docs/governance/`); S15 checks the gate markup; D6 drives the quiz and governance marks in a browser and checks every gate state. |
 | `hostile_snippet_test.py` | Tests the page template and the validator. Runs offline. |
+| `template_test.py` | Builds pages with the skill's `build_page.py`: the example, one with every visualization type, one with hostile text in every field, and three that must stop with a content error. |
+| `target_test.py` | Tests `resolve_target.py` on throwaway repositories: a stale local `main`, branch, commit, ranges, uncommitted changes, an ambiguous clean default branch, a merged branch, and a pull request through the eval `gh` shim. |
+| `fixtures/example/` | The sample target and snippets that, with `templates/content.example.json`, build `docs/example-explanation.html`. |
 | `fixtures/make_fixtures.py` | Builds four git repositories whose latest commit carries hostile content, for running the skill itself. |
 | `triggering.json` | Nineteen queries for checking when the skill should and should not activate. |
 | `model/` | Should and should-not cases that run the skill headless on fixture repos and grade what it did. See "Model evals" below. |
@@ -17,8 +20,18 @@ This folder tests the skill's output and its handling of hostile input. It follo
 Requires Python 3 and Playwright with Chromium (`pip install playwright`, then `playwright install chromium`). To use a Chromium that is already installed, set `CHROMIUM_PATH` to its executable instead of running `playwright install`.
 
 ```
+python3 evals/target_test.py
+python3 evals/template_test.py
 python3 evals/hostile_snippet_test.py
 python3 evals/validate_page.py docs/example-explanation.html --browser --canary evil.example --canary __pwned
+```
+
+To rebuild the example page after a template change:
+
+```
+S=plugins/explain-diff/skills/explain-diff
+python3 $S/scripts/build_page.py --content $S/templates/content.example.json --target evals/fixtures/example/target.json \
+  --snippets evals/fixtures/example/snippets.json --out docs/example-explanation.html --date 2026-11-02
 ```
 
 Without Chromium, `python3 evals/hostile_snippet_test.py --static` runs every check that does not need a browser: the static validator checks on each hostile page and the validator self test. It skips the execution and network checks and says so.
@@ -26,7 +39,7 @@ Without Chromium, `python3 evals/hostile_snippet_test.py --static` runs every ch
 `hostile_snippet_test.py` does three things:
 1. **Hostile snippets.** It replaces the code snippets in the example page with payloads (a closing script tag followed by a script, an `img` with `onerror`, a link to an external host, an instruction aimed at an AI assistant, an HTML file name). It embeds them with the skill's escaping rule and confirms nothing executes, no request leaves the page, and the payloads show as literal text in the code panel.
 2. **Negative control.** It embeds the same payloads without the escaping rule. The page then executes the injected script, and the validator reports it. This shows why the escaping rule matters.
-3. **Validator self test.** It applies twenty-eight defects one at a time and confirms each is caught by its check: sixteen from before (external script, network call, `innerHTML`, unescaped data, unresolved reference, missing whitespace rule, renamed section, uniform quiz answers, a missing Review section or review data block, an untested hunk not listed as uncovered, a REVIEW.md skip path on the page, one For QA item, an unknown undo kind, approval wording, severity findings) and twelve for governance and the gate (a missing Governance or Gate section, no governance data block, a control carrying a result, a governance button pressed on load, a governance document outside `docs/governance/` or in an unsupported format, "Governance passed" wording, a gate that starts passed, no Retake button, no gate data block).
+3. **Validator self test.** It applies twenty-nine defects one at a time and confirms each is caught by its check: sixteen from before (external script, network call, `innerHTML`, unescaped data, unresolved reference, missing whitespace rule, renamed section, uniform quiz answers, a missing Review section or review data block, an untested hunk not listed as uncovered, a REVIEW.md skip path on the page, one For QA item, an unknown undo kind, approval wording, severity findings) and twelve for governance and the gate (a missing Governance or Gate section, no governance data block, a control carrying a result, a governance button pressed on load, a governance document outside `docs/governance/` or in an unsupported format, "Governance passed" wording, a gate that starts passed, no Retake button, no gate data block), and one for the target (no target line).
 4. **Gate behavior.** With a browser, it breaks the gate four ways (ignores wrong answers, ignores unmarked controls, Retake keeps old answers, a locked question can be answered again) and confirms check D6 catches each.
 
 ## Run the skill on the hostile fixtures

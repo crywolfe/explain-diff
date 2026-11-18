@@ -1,0 +1,40 @@
+{
+ "status": "ok",
+ "repo": ".",
+ "mode": "branch",
+ "change": "retry-backoff",
+ "defaultBranch": "main",
+ "base": {
+  "ref": "main",
+  "sha": "ff3253d"
+ },
+ "head": {
+  "ref": "retry-backoff",
+  "sha": "39f902e"
+ },
+ "mergeBase": "ff3253d",
+ "diffArgs": [
+  "ff3253d",
+  "39f902e"
+ ],
+ "pr": null,
+ "files": [
+  {
+   "path": "pagefetch/client.py",
+   "status": "modified",
+   "additions": null,
+   "deletions": null
+  },
+  {
+   "path": "tests/test_client.py",
+   "status": "modified",
+   "additions": null,
+   "deletions": null
+  }
+ ],
+ "additions": null,
+ "deletions": null,
+ "warnings": [],
+ "summary": "Explaining retry-backoff @39f902e against main @ff3253d: 2 file(s).",
+ "note": "Sample target for the invented demo repository; the page shows only short commit ids, so the full ids and line counts are unknown."
+}

@@ -194,6 +194,7 @@ MUTATIONS = [
     ("approval wording", patch("<h3>Where to look</h3>", "<h3>Where to look</h3><p>LGTM, safe to merge.</p>"), "S13-no-verdict"),
     ("severity findings", patch("<h3>Where to look</h3>", "<h3>Where to look</h3><p>Two P1 bugs found.</p>"), "S13-no-verdict"),
     ("missing governance section", patch('<h2 id="governance">Governance</h2>', '<h2 id="governance">Policy</h2>'), "S9-sections"),
+    ("no target line", patch(' id="target"', ""), "S16-target"),
     ("missing gate section", patch('<h2 id="gate">Gate</h2>', '<h2 id="gate">Approval</h2>'), "S9-sections"),
     ("no governance data block", GOVERNANCE.sub("", good_html, count=1), "S14-governance-data"),
     ("governance control carries a result", governance_patch(premarked), "S14-governance-data"),

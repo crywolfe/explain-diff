@@ -1,6 +1,6 @@
 {
   "name": "explain-diff",
-  "version": "1.2.0",
+  "version": "1.3.0",
   "description": "Explains a code change, diff, branch, or pull request as one interactive HTML page with intent, visualizations, a linked code panel, a review guide, governance controls, a quiz, and a human gate.",
   "author": {
     "name": "Gerry Wolfe"

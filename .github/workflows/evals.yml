@@ -53,6 +53,10 @@ jobs:
           python -m playwright install --with-deps chromium
       - name: Grader unit tests
         run: python3 evals/model/test_graders.py
+      - name: Target resolution
+        run: python3 evals/target_test.py
+      - name: Page template and build script
+        run: python3 evals/template_test.py
       - name: Hostile snippets, validator self test, gate behavior
         run: python3 evals/hostile_snippet_test.py
       - name: Example page passes the validator
