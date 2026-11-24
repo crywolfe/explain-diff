@@ -15,6 +15,9 @@ import subprocess
 import sys
 import tempfile
 
+# Test outputs go to throwaway folders, not the skill's private output folder.
+os.environ["EXPLAIN_DIFF_ANY_OUT"] = "1"
+
 HERE = os.path.dirname(os.path.abspath(__file__))
 RESOLVE = os.path.join(HERE, "..", "plugins", "explain-diff", "skills", "explain-diff", "scripts", "resolve_target.py")
 sys.path.insert(0, os.path.join(HERE, "model"))

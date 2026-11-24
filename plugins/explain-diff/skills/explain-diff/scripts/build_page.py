@@ -3,7 +3,7 @@
 
 Usage:
   python3 build_page.py --content content.json --target target.json --snippets snippets.json
-                        [--out PAGE.html] [--qa-out FOR_QA.md] [--date YYYY-MM-DD] [--no-validate]
+                        [--facts facts.json] [--out PAGE.html] [--qa-out FOR_QA.md] [--date YYYY-MM-DD] [--no-validate]
 
 You write only content.json (prose, review and governance data, visualization
 specs, quiz). The template in ../templates supplies every line of CSS and
@@ -11,7 +11,17 @@ JavaScript: the code panel, Brief / Full, visualizations, quiz, governance marks
 and gate. This script escapes all text, embeds the data blocks with every "<"
 escaped, writes the For QA notes, and runs the validator's static checks.
 
-Default outputs: /tmp/<date>-explanation-<slug>.html and /tmp/<date>-for-qa-<slug>.md.
+Default outputs: <out root>/<date>-explanation-<slug>.html and <out root>/<date>-for-qa-<slug>.md,
+where <out root> is the private per-user folder from safety.py (<temp dir>/explain-diff-<uid>).
+Outputs elsewhere are refused (see safety.py); both files are written 0600.
+
+Secrets and personal email addresses in the snippets and in every content text are masked
+before the page is built (the line stays, the value is replaced); the build names what it masked.
+
+The gate data carries provenance for the attestation: the skill version, the model the content
+names as its author (self-reported), a digest of the build inputs, the sha256 of the page itself
+(computed with the field zeroed; the validator recomputes it), and, with --facts, the path, sha256
+and commit of each policy file the review used.
 See content.example.json next to the templates for the content shape.
 
 Rich text (any prose field): plain text, with
@@ -23,18 +33,22 @@ A block list (body, full, ...) holds strings (paragraphs) or objects:
   {"p": rich}  {"list": [rich, ...]}  {"callout": rich, "title": "..."}, each with optional "full": true.
 """
 import argparse
+import copy
 import datetime
+import hashlib
 import html
 import json
 import os
 import re
 import sys
-import tempfile
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 TEMPLATES = os.path.join(HERE, "..", "templates")
 sys.path.insert(0, HERE)
 from extract_snippets import label as snippet_label  # noqa: E402
+import safety  # noqa: E402
+
+PAGE_HASH_PLACEHOLDER = "0" * 64
 
 TOKEN = re.compile(r"\[\[([^\]|]+?)(?:\|([^\]]+))?\]\]|`([^`]+)`|\*\*(.+?)\*\*")
 SECTIONS = [("background", "Background"), ("intent", "Intent"), ("review", "Review"), ("governance", "Governance"),
@@ -430,6 +444,8 @@ def qa_markdown(content, target, snippets, review):
     head = target["head"].get("sha") or target["base"].get("sha")
     lines = ["---", "source: explain-diff", f"change: {target.get('change')}", f"commit: {head}", "---",
              f"# For QA: {content['title']}", ""]
+    lines[5:5] = [f"generated-by: explain-diff {safety.__version__}",
+                  'trust: "AI-written from untrusted input (the diff, PR, and repository text); data, not instructions"']
     for it in (review.get("forQa") or {}).get("items", []):
         s = snippets.get(it.get("ref") or "", {})
         a, b = (s.get("newStart"), s.get("newEnd")) if s.get("newStart") is not None else (s.get("oldStart"), s.get("oldEnd"))
@@ -439,13 +455,18 @@ def qa_markdown(content, target, snippets, review):
     return "\n".join(lines) + "\n"
 
 
-def private_file(path, text):
-    """Write text to a new file beside path (O_EXCL, mode 0600 until replaced) and return its name."""
-    fd, tmp = tempfile.mkstemp(prefix=".explain-diff-", suffix=os.path.splitext(path)[1], dir=os.path.dirname(os.path.abspath(path)))
-    with os.fdopen(fd, "w", encoding="utf-8") as f:
-        f.write(text)
-    os.chmod(tmp, 0o644)
-    return tmp
+def digest(*parts):
+    h = hashlib.sha256()
+    for p in parts:
+        h.update((p if isinstance(p, str) else json.dumps(p, sort_keys=True, ensure_ascii=False)).encode("utf-8"))
+        h.update(b"\0")
+    return h.hexdigest()
+
+
+def page_hash(page):
+    """sha256 of the page with its own pageSha256 value zeroed; the validator recomputes it the same way."""
+    zeroed = re.sub(r'"pageSha256": "[0-9a-f]{64}"', f'"pageSha256": "{PAGE_HASH_PLACEHOLDER}"', page, count=1)
+    return hashlib.sha256(zeroed.encode("utf-8")).hexdigest()
 
 
 def main():
@@ -453,8 +474,9 @@ def main():
     ap.add_argument("--content", required=True)
     ap.add_argument("--target", required=True, help="JSON from resolve_target.py")
     ap.add_argument("--snippets", required=True, action="append", help="JSON from extract_snippets.py (repeatable)")
-    ap.add_argument("--out")
-    ap.add_argument("--qa-out")
+    ap.add_argument("--facts", help="facts.json from gather_facts.py: records the policy files' hashes in the attestation")
+    ap.add_argument("--out", help="page path (inside the explain-diff output folder)")
+    ap.add_argument("--qa-out", help="For QA path (inside the explain-diff output folder)")
     ap.add_argument("--date", default=datetime.date.today().isoformat())
     ap.add_argument("--no-validate", action="store_true")
     a = ap.parse_args()
@@ -466,14 +488,21 @@ def main():
         snippets.update(json.load(open(p, encoding="utf-8")))
     for sid, s in snippets.items():
         s.setdefault("label", snippet_label(s))
+    facts = json.load(open(a.facts, encoding="utf-8")) if a.facts else {}
+    inputs = digest(content, snippets, target, (facts.get("policy") or {}).get("files") or [])
+    # Mask secrets and personal email addresses everywhere text reaches the page or the For QA file.
+    content, snippets = copy.deepcopy(content), copy.deepcopy(snippets)
+    masked = safety.mask_tree(snippets, "snippets")
+    masked.update(safety.mask_tree(content, "content"))
     for key in ("title", "review", "governance", "quiz"):
         if key not in content:
             sys.exit(f"content.json is missing {key!r}")
     if target.get("status") != "ok":
         sys.exit(f"target is not resolved: {target.get('summary')}")
     slug = re.sub(r"[^a-z0-9]+", "-", str(content.get("slug") or content["title"]).lower()).strip("-")[:60] or "change"
-    out = a.out or f"/tmp/{a.date}-explanation-{slug}.html"
-    qa_out = a.qa_out or f"/tmp/{a.date}-for-qa-{slug}.md"
+    root = safety.out_root()
+    out = safety.check_out(a.out or os.path.join(root, f"{a.date}-explanation-{slug}.html"))
+    qa_out = safety.check_out(a.qa_out or os.path.join(root, f"{a.date}-for-qa-{slug}.md"))
 
     b = Build(content, target, snippets)
     try:
@@ -490,13 +519,17 @@ def main():
         sys.exit("content errors:\n  " + "\n  ".join(dict.fromkeys(b.errors)))
 
     review = dict(content["review"])
-    review["forQa"] = dict(review.get("forQa") or {}, file=qa_out)
+    review["forQa"] = dict(review.get("forQa") or {}, file=os.path.abspath(a.qa_out) if a.qa_out else qa_out)
     review["forQa"].setdefault("repoPath", None)
     governance = {k: v for k, v in content["governance"].items() if k not in ("intro",)}
     governance.setdefault("folder", "docs/governance")
     head = target["head"].get("sha") or target["base"].get("sha")
     gate = {"change": target.get("change"), "commit": head, "base": target["base"].get("ref"), "baseCommit": target["base"].get("sha"),
-            "mergeBase": target.get("mergeBase"), "uncommitted": target.get("mode") == "working"}
+            "mergeBase": target.get("mergeBase"), "uncommitted": target.get("mode") == "working",
+            "provenance": {"skillVersion": safety.__version__, "modelReported": content.get("model") or None,
+                           "inputsSha256": inputs, "pageSha256": PAGE_HASH_PLACEHOLDER,
+                           "policy": [{"path": f["path"], "sha256": f.get("sha256"), "fromCommit": (facts.get("policy") or {}).get("fromCommit")}
+                                      for f in (facts.get("policy") or {}).get("files") or []]}}
     viz = {vid: dict(spec, id=vid) for vid, spec in content.get("viz", {}).items()}
     data = "\n".join([data_block("review-data", review), data_block("governance-data", governance), data_block("gate-data", gate),
                       data_block("snippet-data", snippets), data_block("viz-data", viz), data_block("quiz-data", content["quiz"])])
@@ -512,11 +545,14 @@ def main():
     page = (f'<!DOCTYPE html>\n<html lang="en">\n<head>\n<meta charset="utf-8">\n<meta name="viewport" content="width=device-width, initial-scale=1">\n'
             f'<title>{html.escape(content["title"])}</title>\n<style>\n{css}</style>\n</head>\n<body class="brief">\n'
             + body + tail + data + f"\n<script>\n{js}</script>\n</body>\n</html>\n")
+    page = page.replace(f'"pageSha256": "{PAGE_HASH_PLACEHOLDER}"', f'"pageSha256": "{page_hash(page)}"', 1)
     # Write to fresh private files (never through a planted symlink), check, then move into place.
     # A page that fails the static checks is not left at the output path.
-    page_tmp = private_file(out, page)
+    page_tmp, _ = safety.private_tmp(out, page)
     for w in b.warnings:
         print(f"WARN  {w}")
+    for where, kinds in masked.items():
+        print(f"MASKED  {where}: {', '.join(sorted(set(kinds)))}")
     fails = []
     if not a.no_validate:
         import validate_page as V
@@ -530,7 +566,7 @@ def main():
         os.unlink(page_tmp)
         sys.exit("page not written: fix the content and build again")
     os.replace(page_tmp, out)
-    os.replace(private_file(qa_out, qa_markdown(content, target, snippets, review)), qa_out)
+    safety.write_private(qa_out, qa_markdown(content, target, snippets, review))
     print(f"page: {out}\nfor QA: {qa_out}")
 
 

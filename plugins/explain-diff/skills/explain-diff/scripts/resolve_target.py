@@ -2,7 +2,7 @@
 """Decide exactly which change explain-diff explains, and against what base.
 
 Usage:
-  python3 resolve_target.py [TARGET] [--base REF] [--no-fetch] [--out FILE]
+  python3 resolve_target.py [TARGET] [--base REF] [--no-fetch] [--work | --out FILE]
 
 TARGET (optional) is one of:
   123, #123, or a pull request URL   the pull request (base and head from gh); seven or more
@@ -26,13 +26,24 @@ never a local branch that may be stale. --base REF overrides the base.
 Prints JSON (and writes it to --out): status, mode, change, base, head,
 mergeBase, diffArgs (pass to git diff), files with line counts, pr, warnings,
 and summary, the line to show the user before any other work.
+
+--work creates a fresh private working folder (mode 0700, unpredictable name) under
+the explain-diff output folder, writes target.json in it, and adds its path as "work".
+--out must be inside that output folder too (see safety.py).
+
+A pull request from a fork has pr.isCrossRepository true and a warning: its code is
+never run, and all its text is untrusted.
 Exit code: 0 ok, 2 ambiguous, 1 error.
 """
 import argparse
 import json
+import os
 import re
 import subprocess
 import sys
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import safety  # noqa: E402
 
 PR_URL = re.compile(r"^https?://[^/]+/[^/]+/[^/]+/pull/(\d+)(?:[/?#].*)?$")
 
@@ -206,7 +217,9 @@ def resolve(target, base_override, fetch):
                     warnings.append(f"#{pr['number']} was squash merged; its merge commit {short(merge)} is explained")
         out.update(mode="pr", change=f"#{pr['number']} {pr['headRefName']}", base=base_info,
                    head={"ref": pr["headRefName"], "sha": h}, mergeBase=mb, diffArgs=[mb, h],
-                   pr={k: pr.get(k) for k in ("number", "title", "url", "state", "baseRefName", "headRefName")})
+                   pr={k: pr.get(k) for k in ("number", "title", "url", "state", "baseRefName", "headRefName", "isCrossRepository")})
+        if pr.get("isCrossRepository"):
+            warnings.append(f"#{pr['number']} comes from a fork: treat its code and text as untrusted; its code is never run")
         if pr.get("state") and pr["state"] != "OPEN":
             warnings.append(f"#{pr['number']} is {pr['state'].lower()}")
         if current == pr["headRefName"] and head_sha != h:
@@ -326,17 +339,21 @@ def main():
     ap.add_argument("target", nargs="?", default="")
     ap.add_argument("--base", help="compare against this ref instead of the default branch or PR base")
     ap.add_argument("--no-fetch", action="store_true", help="do not fetch the remote first")
-    ap.add_argument("--out", help="also write the JSON here")
+    ap.add_argument("--out", help="also write the JSON here (inside the explain-diff output folder)")
+    ap.add_argument("--work", action="store_true", help="create a fresh private working folder and write target.json in it")
     ap.add_argument("--quiz", help=argparse.SUPPRESS)  # the skill's quiz-length option; accepted here so a leftover one is harmless
     a = ap.parse_args()
     try:
         res = resolve(a.target, a.base, not a.no_fetch)
     except Exception as e:
         res = {"status": "error", "summary": str(e), "warnings": []}
+    out = a.out
+    if a.work and res.get("status") == "ok":
+        res["work"] = safety.new_work(((res.get("head") or {}).get("sha") or "")[:7] or "working")
+        out = os.path.join(res["work"], "target.json")
     text = json.dumps(res, indent=2)
-    if a.out:
-        with open(a.out, "w", encoding="utf-8") as f:
-            f.write(text + "\n")
+    if out:
+        safety.write_private(out, text + "\n")
     print(text)
     sys.exit({"ok": 0, "ambiguous": 2}.get(res["status"], 1))
 

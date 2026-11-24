@@ -1,0 +1,84 @@
+# explain-diff threat model
+
+Scope: the explain-diff plugin (skill, scripts, run guard hook, page template) and its evals and CI. Reviewed
+2026-11-23 for version 1.5.0. Re-review at every minor release and whenever the skill gains a tool, a write, a
+network use, or a new input.
+
+## What it does
+
+A reviewer asks Claude Code to explain a change. The skill resolves the target, gathers facts from git and `gh`,
+has the model write the page's content as JSON, builds a self-contained HTML page from a fixed template, and
+validates it. It may make two commits, each only after the user says yes: a REVIEW.md draft on its own branch,
+and For QA notes on the change's branch. It never pushes, comments on, approves or merges anything.
+
+## Assets
+
+- The reviewer's credentials in the session: `gh` and git tokens, SSH keys, cloud credentials, the Anthropic key.
+- The reviewer's machine: shell startup files, other repositories, Claude Code settings and skills.
+- The integrity of the review: the rules applied (REVIEW.md, governance documents), the risk ranking, the
+  attestation, and the reviewer's attention.
+- Secrets and personal data inside the code under review.
+
+## Trust boundaries and adversaries
+
+| Input | Who controls it | Trusted? |
+| --- | --- | --- |
+| The user's request | The reviewer | Yes |
+| SKILL.md, scripts, template, hooks | This repository, at an installed tag | Yes, if installed pinned |
+| Diff, PR title and body, commit messages, branch names | The change's author | **No** |
+| Repository files, tests, fixtures, `.claude/` | The change's author (they can edit any of them) | **No** |
+| REVIEW.md, governance documents at the **base** commit | The team (approved on the default branch) | Rules yes, instructions no |
+| The same files on the change's branch | The change's author | **No** |
+| A `review-init` skill | The user (user or plugin scope) / the author (repo scope) | Only user or plugin scope |
+
+The main adversary is the author of a hostile change, especially a pull request from a fork or an outside
+contributor. They aim for the model to run their code, leak the reviewer's credentials, weaken the rules it
+is reviewed by, or tell the reviewer it is safe.
+
+## Threats and controls
+
+| # | Threat | Control | Enforced by | Tested by |
+| --- | --- | --- | --- | --- |
+| T1 | Prompt injection in any untrusted text makes the model run a command, fetch a URL, or use an MCP tool | Run guard allowlist: only the skill's scripts (byte-identical), read-only git and gh, read-only utilities confined to the repo; network, MCP, other skills and other programs denied | `run_guard.py` hook | `guard_test.py`, model evals |
+| T2 | The change's tests, `conftest.py`, package scripts or Git hooks run with the reviewer's credentials | The skill never runs them; the guard denies interpreters on anything but the skill's scripts | SKILL.md + guard | `guard_test.py`, `no-run-pr-code` |
+| T3 | The change rewrites REVIEW.md or governance documents to weaken its own review | Rules read from the base commit; policy and agent-instruction edits ranked High and flagged for the owner | `gather_facts.py` | `facts_test.py`, `policy-weakening` |
+| T4 | A write lands in a shell startup file, a symlink target, or a shared temp path | One private output root (0700, files 0600); other paths, symlinks and loose folders refused | `safety.py` | `safety_test.py` |
+| T5 | A tracked symlink makes the skill read a file outside the repository | Reads come from git objects; working-mode reads never follow a symlink | `safety.read_in_repo`, `extract_snippets.py` | `safety_test.py` |
+| T6 | Secrets or personal email addresses in the code end up on a page that gets shared | Masking at build; S17 fails a page with an unmasked secret | `build_page.py`, `validate_page.py` | `safety_test.py`, `hostile_snippet_test.py` |
+| T7 | Hostile text executes in the page or makes it call out | Fixed template, escaped data blocks, no network code; static and browser checks | `build_page.py`, `validate_page.py` | `hostile_snippet_test.py`, `template_test.py` |
+| T8 | The model commits or writes without the user's yes | Commits only through two scripts; the guard makes Claude Code ask the user before each | `run_guard.py`, the scripts | `guard_test.py` |
+| T9 | A repository supplies its own `review-init` that runs on the user's yes | Repo-scoped review-init is denied; only user or plugin scope | `run_guard.py` | `guard_test.py`, `missing-yes-repo-review-init` |
+| T10 | The page is edited after the build, or the attestation claims rules it did not use | Page hash (S18); provenance with policy hashes; the optional gate checks them against the base | `build_page.py`, `docs/gate/` | `hostile_snippet_test.py`, `node --test docs/gate/validate.test.js` |
+| T11 | A tampered or moved release, CI action, or test dependency | Tagged installs, SHA-pinned actions, hashed Playwright, pinned Claude Code on PRs, `npm audit signatures` | README, CI | `meta_test.py` |
+| T12 | The model's narrative misleads the reviewer (a verdict, invented coverage) | No verdict wording (S13); coverage is "not run"; the gate checks attention, not correctness | Validator + SKILL.md | Model evals |
+
+## Credential scope (least privilege)
+
+The skill needs: read access to the repository, and for pull requests a `gh` login that can read them. Use a
+fine-grained token limited to the repositories you review with **Contents: read** and **Pull requests: read**
+(`GH_TOKEN=... claude`), not a token that can push or approve. The two commits are local and are never pushed.
+The run's tool calls are logged in `<temp dir>/explain-diff-<uid>/logs/`, and both commits carry a
+`Generated-by: explain-diff/<version>` trailer, so its actions are attributable to the skill, under your identity.
+
+## Residual risks
+
+- The guard enforces tools, not judgement: injected text can still skew the narrative or ranking. The reviewer
+  reads the code; the gate makes them engage, it does not prove the review is right.
+- The guard parses shell commands itself and allows exact option lists for `git`, `gh` and a few utilities. Two
+  adversarial reviews (2026-11-23) found bypasses through option bundles, globs, comments, quoting, zsh
+  expansions and planted git config; each is fixed and has a regression test in `evals/guard_test.py`. A parser
+  disagreement with the shell, or a dangerous option in a future tool version, would still be a bypass. Report
+  it as a vulnerability.
+- Masking is pattern based. A secret in an unusual format can get through; S17 runs the same patterns.
+- The guard is active only while the plugin is enabled. A copy of the skill installed without the plugin has no
+  guard (the README says so).
+- `modelReported` in the attestation is what the model said it was; nothing verifies it.
+
+## Ownership and lifecycle
+
+- Owner: the repository maintainer (see `.github/CODEOWNERS`), who approves changes to the skill, the guard, the
+  evals and CI, and handles reports under `SECURITY.md`.
+- Release: a version bump in `plugin.json` and `safety.py`, a CHANGELOG entry, the offline suite green, a model
+  eval run recorded in `evals/RESULTS.md` for any change to SKILL.md or the guard, then a tag.
+- Monitoring: the weekly model eval run against the latest Claude Code opens an `eval-regression` issue on a miss.
+- Retirement: if the plugin is withdrawn, mark it in the README and marketplace and keep the last tag installable.

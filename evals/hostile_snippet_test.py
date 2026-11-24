@@ -22,6 +22,9 @@ import re
 import sys
 import tempfile
 
+# Test outputs go to throwaway folders, not the skill's private output folder.
+os.environ["EXPLAIN_DIFF_ANY_OUT"] = "1"
+
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import validate_page as V  # noqa: E402
 
@@ -99,7 +102,8 @@ else:
   escaped = json.dumps(data, ensure_ascii=False).replace("<", "\\u003c")
   ok_path = write("hostile-escaped.html", swap_block(good_html, escaped))
   res = V.run(ok_path, browser=True, canaries=CANARIES)
-  check("escaped hostile page passes every check", not fails(res), str(sorted(fails(res))))
+  # The page is patched by hand here, so S18 (the page hash) must notice; every other check must pass.
+  check("escaped hostile page passes every check but the page hash", fails(res) == {"S18-page-hash"}, str(sorted(fails(res))))
   text = panel_text(ok_path)
   check("payloads are displayed as literal text in the code panel", "window.__pwned=1" in text and "<img src=x" in text)
 
@@ -204,6 +208,9 @@ MUTATIONS = [
     ("page says governance passed", patch("<h3>Where to look</h3>", "<h3>Where to look</h3><p>Governance passed.</p>"), "S14-governance-data"),
     ("gate markup starts passed", patch('id="gate-status" data-state="blocked"', 'id="gate-status" data-state="passed"'), "S15-gate"),
     ("no Retake quiz button", patch('id="quiz-reset"', 'id="quiz-again"'), "S15-gate"),
+    ("a GitHub token in the quiz data", patch('"Why does backoff_delay', '"ghp_' + 'A1b2C3d4' * 5 + ' Why does backoff_delay'), "S17-no-secrets"),
+    ("an assigned password in a snippet", patch('"kind": "ctx", "text": "', '"kind": "ctx", "text": "password = \\"Zq9vX2mLp8Rt\\"  ', 1), "S17-no-secrets"),
+    ("the page edited after the build", patch("<b>TL;DR:</b>", "<b>TL;DR:</b> Edited."), "S18-page-hash"),
     ("no gate data block", re.sub(r'<script type="application/json" id="gate-data">.*?</script>', "", good_html, count=1, flags=re.S), "S15-gate"),
 ]
 for i, (name, html, expect) in enumerate(MUTATIONS):

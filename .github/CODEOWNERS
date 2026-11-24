@@ -1,0 +1,8 @@
+# Every change needs the maintainer's review. Changes to the skill's security boundary, the evals that test it,
+# and CI also need it, listed separately so a future co-maintainer can be added per area.
+*                                              @crywolfe
+/plugins/explain-diff/hooks/                   @crywolfe
+/plugins/explain-diff/skills/explain-diff/     @crywolfe
+/evals/                                        @crywolfe
+/.github/                                      @crywolfe
+/docs/gate/                                    @crywolfe

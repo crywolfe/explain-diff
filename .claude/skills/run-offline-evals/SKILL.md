@@ -1,6 +1,6 @@
 ---
 name: run-offline-evals
-description: Run every offline check for the explain-diff skill (resolver, page template and build, hostile input, graders, model-eval dry run, example page). Use after changing anything under plugins/explain-diff/ or evals/, or before committing.
+description: Run every offline check for the explain-diff skill (versions and pins, run guard, file and data safety, resolver, facts, page template and build, hostile input, approval gate, graders, model-eval dry run, example page). Use after changing anything under plugins/explain-diff/ or evals/, or before committing.
 ---
 
 # Run the offline evals
@@ -8,22 +8,26 @@ description: Run every offline check for the explain-diff skill (resolver, page 
 Run from the repository root. Browser parts need Playwright; uv supplies a pinned copy.
 
 ```
+python3 evals/meta_test.py
+python3 evals/guard_test.py
+python3 evals/safety_test.py
 uv run -q --with playwright==1.65.2 python3 evals/template_test.py
 python3 evals/target_test.py
 python3 evals/facts_test.py
 uv run -q --with playwright==1.65.2 python3 evals/hostile_snippet_test.py
+node --test docs/gate/validate.test.js
 python3 evals/model/test_graders.py
 python3 evals/model/run.py --dry-run --all --out "$(mktemp -d)"
 python3 evals/validate_page.py docs/example-explanation.html --browser --canary evil.example --canary __pwned
 ```
 
-Each prints a last line with its failure count; all must be 0 (the dry run must exit 0).
+Each prints a last line with its failure count; all must be 0 (the dry run must exit 0; `node --test` prints `fail 0`).
 
 If `templates/` changed, rebuild the example page first, then run the list above:
 
 ```
 S=plugins/explain-diff/skills/explain-diff
-python3 $S/scripts/build_page.py --content $S/templates/content.example.json --target evals/fixtures/example/target.json \
+EXPLAIN_DIFF_ANY_OUT=1 python3 $S/scripts/build_page.py --content $S/templates/content.example.json --target evals/fixtures/example/target.json \
   --snippets evals/fixtures/example/snippets.json --out docs/example-explanation.html \
   --qa-out /tmp/2026-11-02-for-qa-retry-backoff.md --date 2026-11-02
 ```
