@@ -13,25 +13,44 @@ target.json is the output of resolve_target.py. For every changed hunk this list
 It also lists the commits (subject and body), the PR description, REVIEW.md, and the
 governance documents, and gives the change a risk tier: the highest hunk risk.
 
+REVIEW.md and the governance documents are read from the BASE commit, never the working
+tree or the change, so a change cannot rewrite the rules it is reviewed by. Their text is
+written to <folder of --out>/policy/ (.docx and .pdf converted to text, with size and time
+limits) and listed under "policy" with each file's sha256. A change that touches a policy or
+agent-instruction file (REVIEW.md, docs/governance/, CODEOWNERS, CLAUDE.md, AGENTS.md,
+.claude/, SKILL.md, .mcp.json, prompt files) is ranked High and named in policy.changed.
+
 Everything here is a hint for the model to confirm or override. A candidate test only
 counts as coverage once the model has read it and seen it reach the changed lines.
 
 Prints a short summary; the full data is in --out.
 """
 import argparse
+import hashlib
+import html
+import io
 import json
 import os
 import re
+import shutil
 import subprocess
 import sys
+import zipfile
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
 from extract_snippets import file_rows, hunks  # noqa: E402
+import safety  # noqa: E402
+
+# Files that set the rules a review applies, or instruct an AI agent. Changing one changes the review
+# itself, so it is High whatever else it looks like (it is checked before the documentation rule).
+POLICY_RX = (r"(^|/)(REVIEW\.md|CODEOWNERS|CLAUDE\.md|AGENTS\.md|GEMINI\.md|SKILL\.md|\.mcp\.json|\.cursorrules|copilot-instructions\.md)$"
+             r"|(^|/)docs/governance/|(^|/)\.claude/|(^|/)\.cursor/rules/|(^|/)\.github/instructions/|\.prompt(\.[a-z]+)?$")
 
 # Path rules, in order; the first rule that matches a path gives its hint. Tests and docs come
 # first, so tests/test_auth.py is test-only, not authentication.
 PATH_RULES = [
+    ("high", "policy or agent instructions", POLICY_RX),
     ("low", "test-only", r"(^|/)(tests?|__tests__|spec)/|(^|/)test_[^/]*$|_test\.[a-z]+$|\.(test|spec)\.[a-z]+$|(^|/)conftest\.py$"),
     ("low", "documentation", r"\.(md|rst|adoc)$|(^|/)(docs?|documentation)/|(^|/)(LICENSE|NOTICE|CHANGELOG|AUTHORS)[^/]*$"),
     ("high", "CI workflow", r"(^|/)(\.github/workflows|\.circleci|\.buildkite)/|(^|/)(\.gitlab-ci\.ya?ml|Jenkinsfile|azure-pipelines\.ya?ml)$"),
@@ -144,9 +163,8 @@ class Tests:
             if self.rev:
                 self.cache[path] = git("show", f"{self.rev}:{path}").split("\n")
             else:
-                try:
-                    with open(path, encoding="utf-8", errors="replace") as f:
-                        self.cache[path] = f.read().split("\n")
+                try:  # confined to the repository; a symlink gives its target path, never the file it points to
+                    self.cache[path] = safety.read_in_repo(".", path).split("\n")
                 except OSError:
                     self.cache[path] = []
         return self.cache[path]
@@ -223,17 +241,107 @@ def pr_body(target):
             "labels": [x.get("name") for x in d.get("labels") or []]}
 
 
-def documents():
-    review = next((p for p in ("REVIEW.md", ".github/REVIEW.md", "docs/REVIEW.md") if os.path.isfile(p)), None)
-    gov = []
-    if os.path.isdir("docs/governance"):
-        gov = sorted(f"docs/governance/{f}" for f in os.listdir("docs/governance")
-                     if os.path.isfile(f"docs/governance/{f}") and f.lower().endswith((".md", ".pdf", ".docx")))
-    outside = [p for p in ("GOVERNANCE.md", "docs/GOVERNANCE.md", ".github/GOVERNANCE.md") if os.path.isfile(p)]
-    return {"reviewMd": review, "governance": gov, "governanceOutside": outside}
+MAX_DOC_BYTES = 20 * 1024 * 1024   # a policy file larger than this is not read
+MAX_XML_BYTES = 10 * 1024 * 1024   # word/document.xml inside a .docx, uncompressed
+MAX_TEXT = 300_000                 # characters of extracted text kept
+PDF_TIMEOUT = 30
 
 
-def gather(target):
+def blob(rev, path):
+    """(bytes, error) for path at rev, refusing anything that is not a blob or is too large."""
+    kind = subprocess.run(["git", "cat-file", "-t", f"{rev}:{path}"], capture_output=True, text=True)
+    if kind.returncode != 0:
+        return None, "missing"
+    if kind.stdout.strip() != "blob":
+        return None, "not a file"
+    size = subprocess.run(["git", "cat-file", "-s", f"{rev}:{path}"], capture_output=True, text=True).stdout.strip()
+    if not size.isdigit() or int(size) > MAX_DOC_BYTES:
+        return None, f"larger than {MAX_DOC_BYTES // (1024 * 1024)} MB"
+    p = subprocess.run(["git", "cat-file", "blob", f"{rev}:{path}"], capture_output=True)
+    return (p.stdout, None) if p.returncode == 0 else (None, "unreadable")
+
+
+def docx_text(data):
+    """Paragraph text of a .docx, without running anything; refuses an oversized or malformed archive."""
+    try:
+        with zipfile.ZipFile(io.BytesIO(data)) as z:
+            info = z.getinfo("word/document.xml")
+            if info.file_size > MAX_XML_BYTES:
+                return None, "word/document.xml is too large"
+            with z.open(info) as f:
+                xml = f.read(MAX_XML_BYTES + 1).decode("utf-8", "replace")
+    except (KeyError, zipfile.BadZipFile, RuntimeError, OSError, NotImplementedError) as e:
+        return None, f"not a readable Word file ({type(e).__name__})"
+    xml = re.sub(r"</w:p>", "\n", xml)
+    xml = re.sub(r"<w:tab/>", "\t", xml)
+    return html.unescape(re.sub(r"<[^>]+>", "", xml)), None
+
+
+def pdf_text(path):
+    tool = shutil.which("pdftotext")
+    if not tool:
+        return None, "pdftotext is not installed: read the copy with the Read tool (pages)"
+    try:
+        p = subprocess.run([tool, "-layout", "-enc", "UTF-8", path, "-"], capture_output=True, timeout=PDF_TIMEOUT)
+    except subprocess.TimeoutExpired:
+        return None, f"pdftotext took longer than {PDF_TIMEOUT} s"
+    text = p.stdout.decode("utf-8", "replace") if p.returncode == 0 else ""
+    return (text, None) if text.strip() else (None, "no text layer (scanned, encrypted, or corrupt)")
+
+
+def documents(target, work):
+    """REVIEW.md and the governance documents as they are at the base commit, copied into work/policy/."""
+    rev = (target.get("base") or {}).get("sha")
+    out = {"reviewMd": None, "governance": [], "governanceOutside": [],
+           "policy": {"fromCommit": rev, "fromRef": (target.get("base") or {}).get("ref"), "folder": None, "files": [],
+                      "changed": [f["path"] for f in target["files"] if re.search(POLICY_RX, f["path"], re.I)
+                                  or (f.get("oldPath") and re.search(POLICY_RX, f["oldPath"], re.I))]}}
+    if not rev:
+        return out
+    folder = os.path.join(work, "policy")
+    os.makedirs(folder, mode=0o700, exist_ok=True)
+    out["policy"]["folder"] = folder
+    out["reviewMd"] = next((p for p in ("REVIEW.md", ".github/REVIEW.md", "docs/REVIEW.md") if blob(rev, p)[1] != "missing"), None)
+    listing = subprocess.run(["git", "ls-tree", "-z", rev, "docs/governance/"], capture_output=True, text=True).stdout
+    for entry in listing.split("\0"):
+        if "\t" not in entry:
+            continue
+        meta, path = entry.split("\t", 1)
+        if meta.split()[1] == "blob" and path.lower().endswith((".md", ".pdf", ".docx")):
+            out["governance"].append(path)
+    out["governance"].sort()
+    out["governanceOutside"] = [p for p in ("GOVERNANCE.md", "docs/GOVERNANCE.md", ".github/GOVERNANCE.md") if blob(rev, p)[1] != "missing"]
+    for path in ([out["reviewMd"]] if out["reviewMd"] else []) + out["governance"]:
+        fmt = path.rsplit(".", 1)[-1].lower()
+        rec = {"path": path, "format": fmt, "sha256": None, "text": None, "copy": None, "readable": False, "note": None}
+        data, err = blob(rev, path)
+        if data is None:
+            rec["note"] = err
+            out["policy"]["files"].append(rec)
+            continue
+        rec["sha256"] = hashlib.sha256(data).hexdigest()
+        flat = re.sub(r"[^A-Za-z0-9.]+", "_", path)
+        if fmt == "md":
+            text, err = data.decode("utf-8", "replace"), None
+        elif fmt == "docx":
+            text, err = docx_text(data)
+        else:
+            rec["copy"] = os.path.join(folder, flat)
+            safety.write_private(rec["copy"], "")  # created 0600, then filled with the bytes
+            with open(rec["copy"], "wb") as f:
+                f.write(data)
+            text, err = pdf_text(rec["copy"])
+        if text is not None:
+            rec["text"] = safety.write_private(os.path.join(folder, flat + ".txt"), text[:MAX_TEXT])
+            rec["readable"] = True
+            if len(text) > MAX_TEXT:
+                err = f"text cut at {MAX_TEXT} characters"
+        rec["note"] = err
+        out["policy"]["files"].append(rec)
+    return out
+
+
+def gather(target, work):
     rev = target["head"].get("sha")
     tests = Tests(rev)
     test_files = {f["path"] for f in target["files"] if path_hint(f["path"])[1] == "test-only"}
@@ -297,7 +405,7 @@ def gather(target):
             "large": large, "counts": counts, "hunks": sorted(out_hunks, key=lambda h: (-RANK[h["hint"]], -(h["additions"] + h["deletions"]))),
             "files": files_out,
             "testBodies": {k: v for k, v in tests.bodies.items() if any(f"{t['file']}::{t['test']}" == k for h in out_hunks for t in h["candidateTests"])},
-            "commits": commits(target), "pr": pr_body(target), **documents()}
+            "commits": commits(target), "pr": pr_body(target), **documents(target, work)}
 
 
 def main():
@@ -308,16 +416,21 @@ def main():
     target = json.load(open(a.target, encoding="utf-8"))
     if target.get("status") != "ok":
         sys.exit(f"target is not resolved: {target.get('summary')}")
+    out = safety.check_out(a.out)
     os.chdir(target.get("repo", "."))
-    facts = gather(target)
-    with open(a.out, "w", encoding="utf-8") as f:
-        json.dump(facts, f, indent=1, ensure_ascii=False)
+    facts = gather(target, os.path.dirname(out))
+    safety.write_private(out, json.dumps(facts, indent=1, ensure_ascii=False))
     c = facts["counts"]
     print(f"risk tier: {facts['tier']} ({', '.join(facts['tierReasons'][:4]) or 'no specific signal'}); "
           f"hunks: {c['high']} high, {c['medium']} medium, {c['low']} low; {'large change' if facts['large'] else 'small change'}")
     print(f"commits: {len(facts['commits'])}; PR: {'#' + str(facts['pr']['number']) if facts['pr'] else 'none'}; "
           f"REVIEW.md: {facts['reviewMd'] or 'none'}; governance documents: {len(facts['governance'])}"
           + (f"; outside docs/governance/: {', '.join(facts['governanceOutside'])}" if facts["governanceOutside"] else ""))
+    pol = facts["policy"]
+    print(f"policy: read from {pol['fromRef']} @{(pol['fromCommit'] or '')[:7]} into {pol['folder']}"
+          + "".join(f"; {f['path']}: {f['note']}" for f in pol["files"] if f["note"]))
+    if pol["changed"]:
+        print(f"POLICY CHANGED by this change (ranked High; the rules above are the base version): {', '.join(pol['changed'])}")
     by_file = {}
     for h in facts["hunks"]:
         by_file.setdefault(h["file"], []).append(h)

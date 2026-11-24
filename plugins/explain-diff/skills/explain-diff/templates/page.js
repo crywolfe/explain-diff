@@ -234,7 +234,7 @@ Gate.update=function(){safe('Gate',document.getElementById('gate-status'),functi
  if(state==='passed'){var meta={};try{meta=readJSON('gate-data')}catch(e){console.error('[explain-diff] gate data',e)}
   att.value=JSON.stringify({source:'explain-diff',change:meta.change||null,commit:meta.commit||null,base:meta.base||null,baseCommit:meta.baseCommit||null,mergeBase:meta.mergeBase||null,uncommitted:!!meta.uncommitted,
    quiz:{correct:q.score,of:q.of,attempt:q.attempt},
-   governance:g.controls.map(function(c){return {id:c.id,mark:g.marks[c.id]}}),governanceDocuments:(g.documents||[]).map(function(d){return d.path}),at:new Date().toISOString()},null,2)}
+   governance:g.controls.map(function(c){return {id:c.id,mark:g.marks[c.id]}}),governanceDocuments:(g.documents||[]).map(function(d){return d.path}),provenance:meta.provenance||null,at:new Date().toISOString()},null,2)}
  else{att.value=''}
 })};
 

@@ -1,6 +1,7 @@
 {
  "title": "Retry with backoff in fetch_page",
  "slug": "retry-backoff",
+ "model": "claude-opus-5-5",
  "tldr": "`fetch_page` now retries HTTP 429 and 503 up to four attempts with exponential backoff, and honors `Retry-After` up to an 8 second cap. Other failures still raise immediately, and `FetchError` now reports how many attempts were made. Tests pin the wait sequence by injecting a fake `sleep`.",
  "assumptions": "This is a small invented sample repository used for the demo. I ran its 6 tests and all passed.",
  "background": {

@@ -16,11 +16,15 @@ is, --browser reruns itself under `uv run --with playwright`.
 Exit code 0 when no check fails. Warnings do not fail the run.
 """
 import argparse
+import hashlib
 import json
 import os
 import re
 import sys
 from html.parser import HTMLParser
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import safety  # noqa: E402
 
 NET_APIS = re.compile(r"(\bfetch\s*\(|XMLHttpRequest|\bWebSocket\b|\bEventSource\b|sendBeacon|importScripts|new\s+Image\s*\()")
 # innerHTML = "" only clears a container, so it is allowed; any other innerHTML write is a sink.
@@ -249,6 +253,26 @@ def static_checks(path, canaries):
     # S16 the page says what it compares: a target line and the base in the gate data
     add("S16-target", *target_checks(gate, p.tags))
 
+    # S17 no unmasked secrets in the data blocks or the visible text (the build masks them)
+    strings = []
+
+    def collect(o):
+        if isinstance(o, str):
+            strings.append(o)
+        elif isinstance(o, dict):
+            for k, v in o.items():
+                collect(k)
+                collect(v)
+        elif isinstance(o, list):
+            for v in o:
+                collect(v)
+    collect(parsed)
+    leaks = safety.unmasked("\n".join(strings) + "\n" + text)
+    add("S17-no-secrets", "FAIL" if leaks else "PASS", "; ".join(leaks[:5]) or "none found")
+
+    # S18 the page is the one the build wrote: its own sha256 matches the gate data
+    add("S18-page-hash", *page_hash_check(src, gate))
+
     # S10 quiz shape, when the data is statically visible
     quiz = None
     for b in parsed:
@@ -421,6 +445,19 @@ def gate_checks(block, attrs):
     if any(v == "passed" for v in states):
         msgs.append("gate markup starts passed")
     return ("FAIL" if msgs else "PASS"), ("; ".join(msgs) or "gate starts blocked")
+
+
+def page_hash_check(src, block):
+    try:
+        prov = (json.loads(block["text"]) if block else {}).get("provenance") or {}
+    except Exception:
+        prov = {}
+    want = prov.get("pageSha256")
+    if not want:
+        return "WARN", "no pageSha256 in the gate data (a page built before explain-diff 1.5.0)"
+    zeroed = re.sub(r'"pageSha256": "[0-9a-f]{64}"', '"pageSha256": "' + "0" * 64 + '"', src, count=1)
+    got = hashlib.sha256(zeroed.encode("utf-8")).hexdigest()
+    return ("PASS", "matches the build") if got == want else ("FAIL", "the page was changed after the build (pageSha256 does not match)")
 
 
 def target_checks(block, tags):

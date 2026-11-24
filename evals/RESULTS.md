@@ -2,6 +2,14 @@
 
 Dated results of runs of the suite described in [README.md](README.md), newest first.
 
+## Pending (1.5.0, security hardening)
+
+No model eval run covers 1.5.0 yet. Before tagging it: run all 24 cases on Opus, Sonnet and Haiku
+(`python3 evals/model/run.py --model opus,sonnet,haiku --all --parallel 4`, about $30 to $60), record the counts
+against the 22/24 and 19/24 bars here, and grade the sample in [GRADING.md](GRADING.md). This is the first run with
+the run guard loaded and credentials scrubbed, so read the `permission_denials` in each record: a denial on a call
+the skill needs is a guard bug, not a model miss. Offline suites all pass as of 2026-11-23.
+
 ## Run record (model evals, Nov 8)
 
 All 17 cases ran once on each model, then the three cases touched by fixes ran again on all three models. Total cost about $25.

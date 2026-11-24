@@ -1,0 +1,79 @@
+# explain-diff gate: sets the commit status explain-diff/gate on a pull request's head commit.
+# Install: copy this file to .github/workflows/ and validate.js to .github/explain-diff-gate/validate.js
+# on the default branch, then require the status in branch protection (see docs/approval-gate.md).
+# The checks live in validate.js and are tested by validate.test.js; this file only gathers facts from GitHub.
+name: explain-diff gate
+# Only triggers that run the default branch's copy of this workflow: a pull request cannot edit what checks it.
+# (pull_request_review is left out on purpose: it runs the workflow file from the pull request.)
+on:
+  issue_comment: { types: [created, edited, deleted] }
+  pull_request_target: { types: [opened, synchronize, reopened] }
+permissions:
+  contents: read
+  pull-requests: read
+  statuses: write
+jobs:
+  gate:
+    if: github.event.issue.pull_request || github.event.pull_request
+    runs-on: ubuntu-latest
+    steps:
+      # The validator always comes from the default branch, never from the pull request.
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+          sparse-checkout: .github/explain-diff-gate
+          persist-credentials: false
+      - uses: actions/github-script@f28e40c7f34bde8b3046d885e986cb6290c5673b # v7.1.0
+        with:
+          script: |
+            const crypto = require('crypto');
+            const { validate, parseComment } = require(`${process.env.GITHUB_WORKSPACE}/.github/explain-diff-gate/validate.js`);
+            const { owner, repo } = context.repo;
+            const num = context.payload.pull_request?.number ?? context.payload.issue.number;
+            const pr = (await github.rest.pulls.get({ owner, repo, pull_number: num })).data;
+            const head = pr.head.sha;
+            // The rules in force are the base branch's, as it is now.
+            const baseSha = (await github.rest.repos.getBranch({ owner, repo, branch: pr.base.ref })).data.commit.sha;
+            const mergeBase = (await github.rest.repos.compareCommitsWithBasehead({ owner, repo, basehead: `${baseSha}...${head}` })).data.merge_base_commit.sha;
+            const at = async (path) => {
+              try { return (await github.rest.repos.getContent({ owner, repo, path, ref: baseSha })).data; }
+              catch (e) { if (e.status === 404) return null; throw e; }
+            };
+            const listing = await at('docs/governance');
+            const govEntries = Array.isArray(listing) ? listing.filter((f) => f.type === 'file' && /\.(md|pdf|docx)$/i.test(f.name)) : [];
+            let reviewMd = null;
+            for (const p of ['REVIEW.md', '.github/REVIEW.md', 'docs/REVIEW.md']) {
+              const f = await at(p);
+              if (f && !Array.isArray(f) && f.type === 'file') { reviewMd = f; break; }
+            }
+            const policy = [];
+            for (const f of [reviewMd, ...govEntries].filter(Boolean)) {
+              const blob = (await github.rest.git.getBlob({ owner, repo, file_sha: f.sha })).data;
+              policy.push({ path: f.path, sha256: crypto.createHash('sha256').update(Buffer.from(blob.content, 'base64')).digest('hex') });
+            }
+            const facts = { headSha: head, baseRef: pr.base.ref, mergeBase, governanceFiles: govEntries.map((f) => f.path), policy };
+
+            // An attester counts when they can write to the repository and did not open the pull request.
+            // Branch protection separately requires an approval (see docs/approval-gate.md).
+            const canWrite = async (login) => {
+              try {
+                const p = (await github.rest.repos.getCollaboratorPermissionLevel({ owner, repo, username: login })).data.permission;
+                return ['admin', 'maintain', 'write'].includes(p);
+              } catch (e) { return false; }
+            };
+            const comments = await github.paginate(github.rest.issues.listComments, { owner, repo, issue_number: num });
+            const valid = new Set(), why = [];
+            for (const c of comments) {
+              const a = parseComment(c.body);
+              if (!a || !c.user) continue;
+              if (c.user.login === pr.user.login) { why.push(`${c.user.login}: the PR author cannot attest`); continue; }
+              if (!(await canWrite(c.user.login))) { why.push(`${c.user.login}: no write access`); continue; }
+              const v = validate(a, facts);
+              if (v.ok) valid.add(c.user.login); else why.push(`${c.user.login}: ${v.reasons[0]}`);
+            }
+            const passed = valid.size > 0;
+            const description = passed ? `Attested for this commit by ${[...valid].join(', ')}`
+              : (why.length ? why[why.length - 1] : 'No explain-diff attestation for this commit');
+            core.info(`valid attestations: ${[...valid].join(', ') || 'none'}; ${why.join(' | ')}`);
+            await github.rest.repos.createCommitStatus({ owner, repo, sha: head, context: 'explain-diff/gate',
+              state: passed ? 'success' : 'failure', description: description.slice(0, 140) });

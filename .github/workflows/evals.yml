@@ -6,6 +6,11 @@
 # workflow_dispatch  model evals on the models and cases you choose; alert is optional
 #
 # Model evals need the repository secret ANTHROPIC_API_KEY. They cost roughly $10 to $20 per model per full run.
+#
+# Supply chain: actions are pinned by commit SHA (Dependabot proposes updates); Playwright is installed from
+# evals/requirements-ci.txt with hashes; Claude Code is pinned to CLAUDE_CODE_PIN on pull requests and manual
+# runs, and the weekly run takes the latest release on purpose, to catch Claude Code changes as well as model
+# changes. Both install with `npm audit signatures`.
 name: evals
 
 on:
@@ -14,7 +19,12 @@ on:
       - "plugins/**"
       - "evals/**"
       - "docs/example-explanation.html"
+      - "docs/gate/**"
       - ".github/workflows/evals.yml"
+      - ".claude-plugin/**"
+      - ".claude/skills/run-offline-evals/**"
+      - "CHANGELOG.md"
+      - "README.md"
   schedule:
     - cron: "17 9 * * 1" # Mondays 09:17 UTC
   workflow_dispatch:
@@ -33,6 +43,9 @@ on:
 permissions:
   contents: read
 
+env:
+  CLAUDE_CODE_PIN: "2.1.331"
+
 concurrency:
   group: evals-${{ github.event_name }}-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
@@ -43,14 +56,25 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
         with:
           python-version: "3.12"
       - name: Install Playwright and Chromium
         run: |
-          pip install playwright==1.48.0
+          pip install --require-hashes -r evals/requirements-ci.txt
           python -m playwright install --with-deps chromium
+      - name: Versions, hashes and plugin metadata agree
+        run: python3 evals/meta_test.py
+      - name: Run guard
+        run: python3 evals/guard_test.py
+      - name: File and data safety
+        run: python3 evals/safety_test.py
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: "22"
+      - name: Approval gate validator
+        run: node --test docs/gate/validate.test.js
       - name: Grader unit tests
         run: python3 evals/model/test_graders.py
       - name: Target resolution
@@ -73,7 +97,7 @@ jobs:
       run: ${{ steps.plan.outputs.run }}
       models: ${{ steps.plan.outputs.models }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           fetch-depth: 0
       - id: plan
@@ -116,16 +140,24 @@ jobs:
       matrix:
         model: ${{ fromJSON(needs.plan.outputs.models) }}
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
         with:
           python-version: "3.12"
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: "20"
-      # Unpinned on purpose: the weekly run exists to catch changes in Claude Code as well as in the models.
+      # Pinned on pull requests and manual runs; the weekly run takes the latest on purpose, to catch
+      # changes in Claude Code as well as in the models.
       - name: Install Claude Code
-        run: npm install -g @anthropic-ai/claude-code
+        env:
+          CC_VERSION: ${{ github.event_name == 'schedule' && 'latest' || env.CLAUDE_CODE_PIN }}
+        run: |
+          mkdir -p "$RUNNER_TEMP/cc" && cd "$RUNNER_TEMP/cc"
+          npm init -y >/dev/null
+          npm install --no-fund --no-audit "@anthropic-ai/claude-code@$CC_VERSION"
+          npm audit signatures
+          echo "$RUNNER_TEMP/cc/node_modules/.bin" >> "$GITHUB_PATH"
       - name: Run the model evals
         env:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
@@ -142,7 +174,7 @@ jobs:
         run: |
           f="evals/model/results/ci-$MODEL/summary.md"
           if [ -f "$f" ]; then cat "$f" >> "$GITHUB_STEP_SUMMARY"; else echo "No summary for $MODEL: the run did not finish." >> "$GITHUB_STEP_SUMMARY"; fi
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         if: ${{ !cancelled() }}
         with:
           name: eval-${{ matrix.model }}
@@ -159,11 +191,11 @@ jobs:
       issues: write
       actions: read
     steps:
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
           pattern: eval-*
           path: results
-      - uses: actions/github-script@v7
+      - uses: actions/github-script@f28e40c7f34bde8b3046d885e986cb6290c5673b # v7.1.0
         env:
           MODEL_RESULT: ${{ needs.model.result }}
           MODELS: ${{ needs.plan.outputs.models }}

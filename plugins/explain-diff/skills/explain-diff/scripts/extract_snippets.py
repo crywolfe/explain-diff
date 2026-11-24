@@ -27,6 +27,9 @@ import re
 import subprocess
 import sys
 
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import safety  # noqa: E402
+
 CONTEXT, TARGET_LEN, CAP = 5, 20, 80
 LOC = re.compile(r"^(?P<file>.+?):(?:(?P<old>old):)?(?P<a>\d+)(?:-(?P<b>\d+))?$")
 
@@ -66,13 +69,11 @@ def file_rows(target, path):
             elif line.startswith(" "):
                 rows.append({"old": o, "new": n, "kind": "ctx", "text": line[1:]}); o += 1; n += 1
         return rows
-    # Not changed by the diff: show the file as it is at the head.
-    head = target["head"].get("sha")
-    if head:
-        text = git("show", f"{head}:{path}")
-    else:
-        with open(os.path.join(target.get("repo", "."), path), encoding="utf-8", errors="replace") as f:
-            text = f.read()
+    # Not changed by the diff: show the file as it is at the head. In working mode a file the diff does not
+    # touch is the same as at HEAD (the base), so it is read from git too: git keeps the read inside the
+    # repository's tree and shows a symlink as its target path, never the file it points to.
+    rev = target["head"].get("sha") or target["base"].get("sha")
+    text = git("show", f"{rev}:{path}")
     lines = text.split("\n")
     if lines and lines[-1] == "":
         lines.pop()
@@ -183,6 +184,7 @@ def main():
     target = json.load(open(a.target, encoding="utf-8"))
     if target.get("status") != "ok":
         sys.exit(f"target is not resolved: {target.get('summary')}")
+    out = safety.check_out(a.out) if a.out else None
     os.chdir(target.get("repo", "."))
     cache = {}
 
@@ -227,9 +229,8 @@ def main():
         if errors:
             sys.exit("\n".join(errors))
     text = json.dumps(data, indent=1, ensure_ascii=False)
-    if a.out:
-        with open(a.out, "w", encoding="utf-8") as f:
-            f.write(text + "\n")
+    if out:
+        safety.write_private(out, text + "\n")
         for sid, s in data.items():
             print(f"{sid}\t{s['label']}\t{len(s['lines'])} lines")
     else:
