@@ -16,7 +16,6 @@ import argparse
 import os
 import re
 import stat
-import subprocess
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -24,13 +23,10 @@ import safety  # noqa: E402
 
 MESSAGE = "Add For QA notes from review"
 
-# No hook or fsmonitor program runs: with --no-verify alone, prepare-commit-msg, post-commit and post-checkout still
-# run, and a clone whose core.hooksPath points at a tracked folder (husky) would run the change's own hooks.
-NO_HOOKS = ["-c", "core.hooksPath=/dev/null", "-c", "core.fsmonitor=false"]
 
 
 def git(*args, check=True):
-    p = subprocess.run(["git", *NO_HOOKS, *args], capture_output=True, text=True)
+    p = safety.git(*args)  # no hook or fsmonitor program runs (--no-verify alone leaves several)
     if check and p.returncode != 0:
         sys.exit(f"git {args[0]}: {p.stderr.strip()[:300]}")
     return p.stdout.strip()

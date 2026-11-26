@@ -15,7 +15,6 @@ is pushed, no hook runs (--no-verify), and the commit carries a Generated-by tra
 import argparse
 import json
 import os
-import subprocess
 import sys
 import tempfile
 
@@ -25,20 +24,17 @@ import safety  # noqa: E402
 BRANCH = "review-md-setup"
 MESSAGE = "Add REVIEW.md draft"
 
-# No hook or fsmonitor program runs: with --no-verify alone, prepare-commit-msg, post-commit and post-checkout still
-# run, and a clone whose core.hooksPath points at a tracked folder (husky) would run the change's own hooks.
-NO_HOOKS = ["-c", "core.hooksPath=/dev/null", "-c", "core.fsmonitor=false"]
 
 
 def git(*args, cwd=None, check=True):
-    p = subprocess.run(["git", *NO_HOOKS, *args], capture_output=True, text=True, cwd=cwd)
+    p = safety.git(*args, cwd=cwd)  # no hook or fsmonitor program runs (--no-verify alone leaves several)
     if check and p.returncode != 0:
         sys.exit(f"git {args[0]}: {p.stderr.strip()[:300]}")
     return p.stdout.strip() if p.returncode == 0 else None
 
 
 def prepare(a):
-    target = json.load(open(a.target, encoding="utf-8"))
+    target = safety.check_target(safety.load_run_file(a.target, "target.json"))  # refuses option-like names and another repo
     os.chdir(target["repo"])
     if git("rev-parse", "--verify", "--quiet", f"refs/heads/{BRANCH}", check=False):
         sys.exit(f"branch {BRANCH} already exists; nothing was created")

@@ -3,6 +3,7 @@
 
 Usage:
   python3 extract_snippets.py --target target.json --list
+  python3 extract_snippets.py --target target.json --diff
   python3 extract_snippets.py --target target.json --refs refs.json --out snippets.json
   python3 extract_snippets.py --target target.json --all-hunks --out snippets.json
 
@@ -24,7 +25,6 @@ import argparse
 import json
 import os
 import re
-import subprocess
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -35,7 +35,7 @@ LOC = re.compile(r"^(?P<file>.+?):(?:(?P<old>old):)?(?P<a>\d+)(?:-(?P<b>\d+))?$"
 
 
 def git(*args):
-    p = subprocess.run(("git",) + args, capture_output=True, text=True, encoding="utf-8", errors="replace")
+    p = safety.git(*args)
     if p.returncode != 0:
         raise RuntimeError(f"git {' '.join(args[:2])}: {p.stderr.strip()[:200]}")
     return p.stdout
@@ -46,7 +46,7 @@ def file_rows(target, path):
     diff_args = target["diffArgs"]
     old_path = next((f.get("oldPath") for f in target.get("files", []) if f["path"] == path and f.get("oldPath")), None)
     spec = [old_path, path] if old_path else [path]
-    out = git("diff", "-U1000000", "--no-color", "--no-ext-diff", "-M", *diff_args, "--", *spec)
+    out = git("diff", "-U1000000", "--no-color", "-M", "--end-of-options", *diff_args, "--", *spec)
     if out.strip():
         if "\nBinary files " in out or out.startswith("Binary files "):
             raise RuntimeError(f"{path} is binary")
@@ -179,13 +179,15 @@ def main():
     ap.add_argument("--refs", help="JSON object: snippet id -> 'path:START-END' or 'path:old:START-END'")
     ap.add_argument("--all-hunks", action="store_true", help="one snippet per changed hunk")
     ap.add_argument("--list", action="store_true", help="print the changed hunks and exit")
+    ap.add_argument("--diff", action="store_true", help="print the whole diff the page explains and exit (no repository hook runs)")
     ap.add_argument("--out", help="write the snippet data here")
     a = ap.parse_args()
-    target = json.load(open(a.target, encoding="utf-8"))
+    target = safety.load_run_file(a.target, "target.json")
     if target.get("status") != "ok":
         sys.exit(f"target is not resolved: {target.get('summary')}")
-    out = safety.check_out(a.out) if a.out else None
-    os.chdir(target.get("repo", "."))
+    safety.check_target(target)  # before any value of it reaches git
+    out = safety.check_out(a.out, own=("snippets.json",)) if a.out else None
+    os.chdir(target["repo"])
     cache = {}
 
     def rows_for(path):
@@ -193,6 +195,9 @@ def main():
             cache[path] = file_rows(target, path)
         return cache[path]
 
+    if a.diff:
+        print(git("diff", "--no-color", "-M", "--end-of-options", *target["diffArgs"], "--"), end="")
+        return
     if a.list or a.all_hunks:
         data, taken = {}, set()
         for f in target["files"]:
@@ -230,7 +235,7 @@ def main():
             sys.exit("\n".join(errors))
     text = json.dumps(data, indent=1, ensure_ascii=False)
     if out:
-        safety.write_private(out, text + "\n")
+        safety.write_private(out, text + "\n", own=("snippets.json",))
         for sid, s in data.items():
             print(f"{sid}\t{s['label']}\t{len(s['lines'])} lines")
     else:

@@ -92,7 +92,7 @@ LARGE_HUNK = 60
 
 
 def git(*args, check=False):
-    p = subprocess.run(("git",) + args, capture_output=True, text=True, encoding="utf-8", errors="replace")
+    p = safety.git(*args)
     if check and p.returncode != 0:
         raise RuntimeError(f"git {args[0]}: {p.stderr.strip()[:200]}")
     return p.stdout if p.returncode == 0 else ""
@@ -219,7 +219,7 @@ def commits(target):
     mode, (a, *rest) = target["mode"], target["diffArgs"]
     if mode == "working" or not rest:
         return []
-    out = git("log", "--no-merges", "-50", "--format=%h%x1f%s%x1f%b%x1e", f"{a}..{rest[-1]}")
+    out = git("log", "--no-merges", "-50", "--format=%h%x1f%s%x1f%b%x1e", "--end-of-options", f"{a}..{rest[-1]}")
     res = []
     for rec in out.split("\x1e"):
         f = rec.strip("\n").split("\x1f")
@@ -249,15 +249,15 @@ PDF_TIMEOUT = 30
 
 def blob(rev, path):
     """(bytes, error) for path at rev, refusing anything that is not a blob or is too large."""
-    kind = subprocess.run(["git", "cat-file", "-t", f"{rev}:{path}"], capture_output=True, text=True)
+    kind = safety.git("cat-file", "-t", f"{rev}:{path}")
     if kind.returncode != 0:
         return None, "missing"
     if kind.stdout.strip() != "blob":
         return None, "not a file"
-    size = subprocess.run(["git", "cat-file", "-s", f"{rev}:{path}"], capture_output=True, text=True).stdout.strip()
+    size = safety.git("cat-file", "-s", f"{rev}:{path}").stdout.strip()
     if not size.isdigit() or int(size) > MAX_DOC_BYTES:
         return None, f"larger than {MAX_DOC_BYTES // (1024 * 1024)} MB"
-    p = subprocess.run(["git", "cat-file", "blob", f"{rev}:{path}"], capture_output=True)
+    p = safety.git("cat-file", "blob", f"{rev}:{path}", binary=True)
     return (p.stdout, None) if p.returncode == 0 else (None, "unreadable")
 
 
@@ -302,7 +302,7 @@ def documents(target, work):
     os.makedirs(folder, mode=0o700, exist_ok=True)
     out["policy"]["folder"] = folder
     out["reviewMd"] = next((p for p in ("REVIEW.md", ".github/REVIEW.md", "docs/REVIEW.md") if blob(rev, p)[1] != "missing"), None)
-    listing = subprocess.run(["git", "ls-tree", "-z", rev, "docs/governance/"], capture_output=True, text=True).stdout
+    listing = safety.git("ls-tree", "-z", rev, "docs/governance/").stdout
     for entry in listing.split("\0"):
         if "\t" not in entry:
             continue
@@ -327,12 +327,12 @@ def documents(target, work):
             text, err = docx_text(data)
         else:
             rec["copy"] = os.path.join(folder, flat)
-            safety.write_private(rec["copy"], "")  # created 0600, then filled with the bytes
+            safety.write_private(rec["copy"], "", own=("policy",))  # created 0600, then filled with the bytes
             with open(rec["copy"], "wb") as f:
                 f.write(data)
             text, err = pdf_text(rec["copy"])
         if text is not None:
-            rec["text"] = safety.write_private(os.path.join(folder, flat + ".txt"), text[:MAX_TEXT])
+            rec["text"] = safety.write_private(os.path.join(folder, flat + ".txt"), text[:MAX_TEXT], own=("policy",))
             rec["readable"] = True
             if len(text) > MAX_TEXT:
                 err = f"text cut at {MAX_TEXT} characters"
@@ -413,13 +413,14 @@ def main():
     ap.add_argument("--target", required=True, help="JSON written by resolve_target.py")
     ap.add_argument("--out", required=True, help="write the facts JSON here")
     a = ap.parse_args()
-    target = json.load(open(a.target, encoding="utf-8"))
+    target = safety.load_run_file(a.target, "target.json")
     if target.get("status") != "ok":
         sys.exit(f"target is not resolved: {target.get('summary')}")
-    out = safety.check_out(a.out)
-    os.chdir(target.get("repo", "."))
+    safety.check_target(target)  # before any value of it reaches git
+    out = safety.check_out(a.out, own=("facts.json",))
+    os.chdir(target["repo"])
     facts = gather(target, os.path.dirname(out))
-    safety.write_private(out, json.dumps(facts, indent=1, ensure_ascii=False))
+    safety.write_private(out, json.dumps(facts, indent=1, ensure_ascii=False), own=("facts.json",))
     c = facts["counts"]
     print(f"risk tier: {facts['tier']} ({', '.join(facts['tierReasons'][:4]) or 'no specific signal'}); "
           f"hunks: {c['high']} high, {c['medium']} medium, {c['low']} low; {'large change' if facts['large'] else 'small change'}")

@@ -8,6 +8,11 @@
    path, never the file's contents; read_in_repo refuses paths that leave the repository.
 3. Masking (F6): tokens and assigned secrets in snippets and personal email addresses in prose are
    masked on the page and in the For QA file, the build names them, and the page passes S17.
+4. Commit scripts: a tracked hooks folder never runs; a symlinked artifacts folder is refused.
+5. Run files and git (H1, H2): a forged target.json (an option in diffArgs, another repository, an option
+   as the PR number or branch name) is refused before git sees it; a script reads an input only under its
+   own name and writes no other script's file; a facts.json whose policy hashes, base commit or run folder
+   differ stops the build; no script runs a tracked hook (git fetch included).
 
 Runs offline in a private TMPDIR. Prints a last line with the failure count.
 """
@@ -49,12 +54,30 @@ def run(script, *args, cwd=None):
     return subprocess.run([sys.executable, os.path.join(SCRIPTS, script), *args], capture_output=True, text=True, env=ENV, cwd=cwd)
 
 
+# A real run for the builds below: a build needs the target and facts the scripts wrote, from one run folder.
+brepo = os.path.join(tmp, "brepo")
+subprocess.run(["git", "init", "-q", "-b", "main", brepo], check=True, env=ENV)
+open(os.path.join(brepo, "a.py"), "w").write("x = 1\n")
+subprocess.run(["git", "-C", brepo, "add", "-A"], check=True, env=ENV)
+subprocess.run(["git", "-C", brepo, "commit", "-qm", "base"], check=True, env=ENV)
+open(os.path.join(brepo, "a.py"), "w").write("x = 2\n")
+_rc = subprocess.run([sys.executable, os.path.join(SCRIPTS, "resolve_target.py"), "working", "--no-fetch", "--work"],
+                     capture_output=True, text=True, env=ENV, cwd=brepo)
+BWORK = json.loads(_rc.stdout)["work"]
+subprocess.run([sys.executable, os.path.join(SCRIPTS, "gather_facts.py"), "--target", os.path.join(BWORK, "target.json"),
+                "--out", os.path.join(BWORK, "facts.json")], check=True, capture_output=True, env=ENV, cwd=brepo)
+
+
 def build(content, snippets, *extra):
     d = tempfile.mkdtemp(dir=OUT)
+    for name in ("target.json", "facts.json"):
+        shutil.copy(os.path.join(BWORK, name), os.path.join(d, name))
     cp, sp = os.path.join(d, "content.json"), os.path.join(d, "snippets.json")
     json.dump(content, open(cp, "w"))
     json.dump(snippets, open(sp, "w"))
-    return run("build_page.py", "--content", cp, "--target", os.path.join(FIX, "target.json"), "--snippets", sp, "--date", "2026-11-02", *extra)
+    return subprocess.run([sys.executable, os.path.join(SCRIPTS, "build_page.py"), "--content", cp, "--target", os.path.join(d, "target.json"),
+                           "--snippets", sp, "--facts", os.path.join(d, "facts.json"), "--date", "2026-11-02", *extra],
+                          capture_output=True, text=True, env=ENV, cwd=brepo)
 
 
 content = json.load(open(os.path.join(SKILL, "templates", "content.example.json"), encoding="utf-8"))
@@ -64,9 +87,19 @@ print("== 1. Output paths ==")
 home = os.path.join(tmp, "home")
 os.makedirs(home)
 rc = build(content, snippets, "--qa-out", os.path.join(home, ".zshrc"))
-check("a For QA path outside the output folder is refused", rc.returncode != 0 and not os.path.exists(os.path.join(home, ".zshrc")), rc.stderr.strip()[-160:])
+check("a For QA path outside the output folder is refused", rc.returncode != 0 and "writes only under" in rc.stderr
+      and not os.path.exists(os.path.join(home, ".zshrc")), rc.stderr.strip()[-160:])
 rc = build(content, snippets, "--out", os.path.join(home, "page.html"))
-check("a page path outside the output folder is refused", rc.returncode != 0 and not os.path.exists(os.path.join(home, "page.html")), rc.stderr.strip()[-160:])
+check("a page path outside the output folder is refused", rc.returncode != 0 and "writes only under" in rc.stderr
+      and not os.path.exists(os.path.join(home, "page.html")), rc.stderr.strip()[-160:])
+d = tempfile.mkdtemp(dir=OUT)
+shutil.copy(os.path.join(BWORK, "target.json"), os.path.join(d, "target.json"))
+json.dump(content, open(os.path.join(d, "content.json"), "w"))
+json.dump(snippets, open(os.path.join(d, "snippets.json"), "w"))
+rc = run("build_page.py", "--content", os.path.join(d, "content.json"), "--target", os.path.join(d, "target.json"),
+         "--snippets", os.path.join(d, "snippets.json"), "--no-validate", cwd=brepo)
+check("a build without --facts is refused (it would check neither the target nor the policy)",
+      rc.returncode != 0 and "pass --facts" in rc.stderr and not [f for f in os.listdir(OUT) if f.endswith(".html")], rc.stderr.strip()[-160:])
 rc = build(content, snippets)
 page = os.path.join(OUT, "2026-11-02-explanation-retry-backoff.html")
 qa = os.path.join(OUT, "2026-11-02-for-qa-retry-backoff.md")
@@ -189,6 +222,184 @@ subprocess.run(["git", "-C", qrepo, "-c", "core.hooksPath=/dev/null", "commit", 
 rc = run("commit_for_qa.py", "--notes", notes, "--slug", "export", "--branch", "feature", cwd=qrepo)
 check("a symlinked artifacts folder is refused before anything is created", rc.returncode != 0 and not os.path.exists(os.path.join(tmp, "outside-artifacts")),
       rc.stderr.strip()[-160:])
+
+print("\n== 5. Run files and git ==")
+# A forged target.json (the model, or anything else, rewrote it): git must never see an option in it.
+pwned = os.path.join(tmp, "PWNED-output.txt")
+good = json.load(open(target))
+for desc, forge in (
+        ("an option in diffArgs", lambda t: t.update(mode="commit", diffArgs=[t["base"]["sha"], t["base"]["sha"], "--output=" + pwned])),
+        ("an option as a revision", lambda t: t.update(mode="commit", diffArgs=["--output=" + pwned, t["base"]["sha"]])),
+        ("a short revision", lambda t: t.update(mode="commit", diffArgs=[t["base"]["sha"][:7], t["base"]["sha"]])),
+        ("a base that is not the merge base", lambda t: t.update(mode="commit", diffArgs=[t["base"]["sha"], t["base"]["sha"]], mergeBase="f" * 40)),
+        ("working mode with extra arguments", lambda t: t.update(diffArgs=["HEAD", "--output=" + pwned])),
+        ("an option as the head commit", lambda t: t["head"].update(sha="--output=" + pwned)),
+        ("an absolute file path", lambda t: t["files"].append({"path": "/etc/passwd"})),
+        ("another repository", lambda t: t.update(repo=os.path.join(tmp, "outside"))),
+        ("an option as the PR number", lambda t: t.update(pr={"number": "--web"})),
+        ("an option as the default branch", lambda t: t.update(defaultBranch="--orphan=x")),
+        ("commits git does not have and no files", lambda t: t.update(mode="commit", diffArgs=["e" * 40, "f" * 40], mergeBase="e" * 40,
+                                                                      files=[], head=dict(t["head"], sha="f" * 40)))):
+    forged = copy.deepcopy(good)
+    forge(forged)
+    fp = os.path.join(tempfile.mkdtemp(dir=OUT), "target.json")  # a target.json written by something other than the resolver
+    json.dump(forged, open(fp, "w"))
+    r1 = run("extract_snippets.py", "--target", fp, "--refs", refs, "--out", os.path.join(work, "forged-snippets.json"), cwd=repo)
+    r2 = run("gather_facts.py", "--target", fp, "--out", os.path.join(work, "forged-facts.json"), cwd=repo)
+    check(f"a target.json with {desc} is refused by extract_snippets and gather_facts",
+          r1.returncode != 0 and r2.returncode != 0 and "resolve_target.py wrote" in r1.stderr + r2.stderr and not os.path.exists(pwned),
+          (r1.stderr + r2.stderr).strip()[-160:])
+# The file list must be git's: it decides which files get snippets and which count as policy changes.
+dropped = copy.deepcopy(good)
+dropped["files"] = dropped["files"][1:]
+dp = os.path.join(tempfile.mkdtemp(dir=OUT), "target.json")
+json.dump(dropped, open(dp, "w"))
+r1 = run("extract_snippets.py", "--target", dp, "--list", cwd=repo)
+r2 = run("gather_facts.py", "--target", dp, "--out", os.path.join(os.path.dirname(dp), "facts.json"), cwd=repo)
+check("a target.json that leaves out a changed file is refused", good["files"] and r1.returncode != 0 and r2.returncode != 0
+      and "files is not the list git gives" in r1.stderr + r2.stderr, (r1.stderr + r2.stderr).strip()[-160:])
+# A user's diff.relative=true: run from a subfolder, the file list still has every file, from the repository root.
+rrepo = os.path.join(tmp, "rrepo")
+os.makedirs(os.path.join(rrepo, "sub"))
+subprocess.run(["git", "init", "-q", "-b", "main", rrepo], check=True, env=ENV)
+for name in ("b.py", "sub/a.py"):
+    open(os.path.join(rrepo, name), "w").write("x = 1\n")
+subprocess.run(["git", "-C", rrepo, "add", "-A"], check=True, env=ENV)
+subprocess.run(["git", "-C", rrepo, "commit", "-qm", "base"], check=True, env=ENV)
+subprocess.run(["git", "-C", rrepo, "config", "diff.relative", "true"], check=True, env=ENV)
+for name in ("b.py", "sub/a.py"):
+    open(os.path.join(rrepo, name), "w").write("x = 2\n")
+rc = run("resolve_target.py", "working", "--no-fetch", "--work", cwd=os.path.join(rrepo, "sub"))
+res = json.loads(rc.stdout) if rc.stdout.strip().startswith("{") else {}
+rtarget = os.path.join(res.get("work") or tmp, "target.json")
+rfiles = sorted(f["path"] for f in json.load(open(rtarget))["files"]) if os.path.exists(rtarget) else []
+r1 = run("extract_snippets.py", "--target", rtarget, "--list", cwd=os.path.join(rrepo, "sub"))
+check("with diff.relative=true, a run from a subfolder lists every file from the root", res.get("status") == "ok"
+      and rfiles == ["b.py", "sub/a.py"] and r1.returncode == 0, (str(rfiles) + rc.stderr + r1.stderr).strip()[-200:])
+# Files named like options really in the change (added to the index), and legal but unusual branch names.
+odd = ["-x.txt", "--output=PWNED-name"]
+for name in odd:
+    open(os.path.join(repo, name), "w").write("odd\n")
+subprocess.run(["git", "-C", repo, "add", "--", *odd], check=True, env=ENV)
+rc = run("resolve_target.py", "working", "--no-fetch", "--work", cwd=repo)
+owork = (json.loads(rc.stdout) if rc.returncode == 0 else {}).get("work") or ""
+op = os.path.join(owork, "target.json")
+ok = json.load(open(op)) if owork else {}
+ok.update(defaultBranch="rel+1/développement", remote="up-stream")
+safety.write_private(op, json.dumps(ok), own=("target.json",))
+r1 = run("extract_snippets.py", "--target", op, "--list", cwd=repo)
+r2 = run("gather_facts.py", "--target", op, "--out", os.path.join(owork, "facts.json"), cwd=repo)
+check("a legal branch name with + or accents, and files named -x.txt and --output=..., are accepted",
+      r1.returncode == 0 and r2.returncode == 0 and set(odd) <= {f["path"] for f in ok.get("files", [])}, (rc.stderr + r1.stderr + r2.stderr).strip()[-160:])
+check("a file path that looks like an option reaches git only after --", not os.path.exists(os.path.join(repo, "PWNED-name")))
+subprocess.run(["git", "-C", repo, "rm", "-q", "--cached", "--", *odd], check=True, env=ENV)
+for name in odd:
+    os.remove(os.path.join(repo, name))
+
+# A file the model may write (content.json) cannot stand in for a script's file, and no script overwrites another's.
+cfake = os.path.join(work, "content.json")
+shutil.copy(target, cfake)
+r1 = run("gather_facts.py", "--target", cfake, "--out", os.path.join(work, "facts.json"), cwd=repo)
+r2 = run("extract_snippets.py", "--target", cfake, "--list", cwd=repo)
+check("a target passed under another name (a model-written content.json) is refused", r1.returncode != 0 and r2.returncode != 0
+      and "is not a target.json" in r1.stderr + r2.stderr, (r1.stderr + r2.stderr).strip()[-160:])
+for script, args in (("resolve_target.py", ["working", "--no-fetch", "--out", os.path.join(work, "facts.json")]),
+                     ("gather_facts.py", ["--target", target, "--out", os.path.join(work, "target.json")]),
+                     ("extract_snippets.py", ["--target", target, "--refs", refs, "--out", os.path.join(work, "content.json")]),
+                     ("gather_facts.py", ["--target", target, "--out", os.path.join(work, "policy", "facts.json")])):
+    before = open(args[-1]).read() if os.path.exists(args[-1]) else None
+    r = run(script, *args, cwd=repo)
+    after = open(args[-1]).read() if os.path.exists(args[-1]) else None
+    check(f"{script} refuses to write {os.path.relpath(args[-1], work)}", r.returncode != 0 and before == after, r.stderr.strip()[-120:])
+r = run("extract_snippets.py", "--target", target, "--diff", cwd=repo)
+check("extract_snippets --diff prints the change", r.returncode == 0 and "+    return 2" in r.stdout, r.stderr.strip()[-160:])
+
+r = run("resolve_target.py", "HEAD~0", "--no-fetch", "--base", "--output=" + pwned, cwd=repo)
+check("resolve_target refuses a base that starts with '-'", r.returncode != 0 and not os.path.exists(pwned), r.stdout.strip()[-160:])
+
+# The policy record in the attestation comes from git, not from facts.json.
+prepo = os.path.join(tmp, "prepo")
+subprocess.run(["git", "init", "-q", "-b", "main", prepo], check=True, env=ENV)
+open(os.path.join(prepo, "REVIEW.md"), "w").write("# Review\n## Areas\n- billing: money moves\n")
+open(os.path.join(prepo, "app.py"), "w").write("x = 1\n")
+subprocess.run(["git", "-C", prepo, "add", "-A"], check=True, env=ENV)
+subprocess.run(["git", "-C", prepo, "commit", "-qm", "base"], check=True, env=ENV)
+open(os.path.join(prepo, "app.py"), "w").write("x = 2\n")
+rc = run("resolve_target.py", "working", "--no-fetch", "--work", cwd=prepo)
+pwork = (json.loads(rc.stdout) if rc.returncode == 0 else {}).get("work") or ""
+ptarget, pfacts = os.path.join(pwork, "target.json"), os.path.join(pwork, "facts.json")
+rc = run("gather_facts.py", "--target", ptarget, "--out", pfacts, cwd=prepo)
+facts = json.load(open(pfacts)) if rc.returncode == 0 else {}
+check("gather_facts records REVIEW.md at the base", [f["path"] for f in facts.get("policy", {}).get("files", [])] == ["REVIEW.md"], rc.stderr[-160:])
+
+
+def build_with(f, cwd=prepo, folder=None):
+    fp = os.path.join(folder or pwork, "facts.json")
+    json.dump(f, open(fp, "w"))
+    cp, sp = os.path.join(pwork, "content.json"), os.path.join(pwork, "snippets.json")
+    json.dump(content, open(cp, "w"))
+    json.dump(snippets, open(sp, "w"))
+    return run("build_page.py", "--content", cp, "--target", ptarget, "--snippets", sp, "--facts", fp, "--no-validate",
+               "--out", os.path.join(pwork, "page.html"), "--qa-out", os.path.join(pwork, "qa.md"), cwd=cwd)
+
+
+rc = build_with(facts)
+check("build with facts whose policy hashes match git", rc.returncode == 0, (rc.stdout + rc.stderr).strip()[-200:])
+bad = copy.deepcopy(facts)
+bad["policy"]["files"][0]["sha256"] = "0" * 64
+rc = build_with(bad)
+check("build refuses a facts.json whose policy hash is not git's", rc.returncode != 0 and "run gather_facts.py again" in rc.stderr, rc.stderr.strip()[-160:])
+bad = copy.deepcopy(facts)
+bad["policy"]["fromCommit"] = "f" * 40
+rc = build_with(bad)
+check("build refuses policy read from another commit than the base", rc.returncode != 0 and "not the target's base" in rc.stderr, rc.stderr.strip()[-160:])
+rc = build_with(facts, folder=tempfile.mkdtemp(dir=OUT))
+check("build refuses facts from another run folder", rc.returncode != 0 and "same run folder" in rc.stderr, rc.stderr.strip()[-160:])
+d = tempfile.mkdtemp(dir=OUT)
+for args in (["--out", os.path.join(pwork, "policy", "REVIEW.md.txt")], ["--qa-out", os.path.join(pwork, "target.json")]):
+    cp, sp = os.path.join(pwork, "content.json"), os.path.join(pwork, "snippets.json")
+    before = open(args[1]).read() if os.path.exists(args[1]) else None
+    rc = run("build_page.py", "--content", cp, "--target", ptarget, "--snippets", sp, "--no-validate", *args, cwd=prepo)
+    after = open(args[1]).read() if os.path.exists(args[1]) else None
+    check(f"build refuses to write over {os.path.relpath(args[1], pwork)}", rc.returncode != 0 and before == after, rc.stderr.strip()[-120:])
+rc = build_with(facts, cwd=repo)
+check("build with facts refuses to run outside the target's repository", rc.returncode != 0 and "repo is not" in rc.stderr, rc.stderr.strip()[-160:])
+
+# git fetch in the resolver: a clone whose core.hooksPath is a tracked folder must not run the change's hooks.
+origin, clone = os.path.join(tmp, "origin"), os.path.join(tmp, "clone")
+subprocess.run(["git", "init", "-q", "-b", "main", origin], check=True, env=ENV)
+open(os.path.join(origin, "a.txt"), "w").write("a\n")
+subprocess.run(["git", "-C", origin, "add", "-A"], check=True, env=ENV)
+subprocess.run(["git", "-C", origin, "commit", "-qm", "one"], check=True, env=ENV)
+subprocess.run(["git", "clone", "-q", origin, clone], check=True, env=ENV)
+subprocess.run(["git", "-C", clone, "switch", "-q", "-c", "feature"], check=True, env=ENV)
+os.makedirs(os.path.join(clone, ".hooks"))
+for hook in ("reference-transaction", "post-checkout", "post-index-change", "fsmonitor-watchman"):
+    hp = os.path.join(clone, ".hooks", hook)
+    open(hp, "w").write(f"#!/bin/sh\ntouch '{tmp}/FETCH-HOOK-RAN-{hook}'\n")
+    os.chmod(hp, 0o755)
+open(os.path.join(clone, "a.txt"), "w").write("b\n")
+subprocess.run(["git", "-C", clone, "add", "-A"], check=True, env=ENV)
+subprocess.run(["git", "-C", clone, "-c", "core.hooksPath=/dev/null", "commit", "-qm", "two"], check=True, env=ENV)
+subprocess.run(["git", "-C", clone, "config", "core.hooksPath", ".hooks"], check=True, env=ENV)
+open(os.path.join(origin, "b.txt"), "w").write("new\n")
+subprocess.run(["git", "-C", origin, "add", "-A"], check=True, env=ENV)
+subprocess.run(["git", "-C", origin, "commit", "-qm", "three"], check=True, env=ENV)
+rc = run("resolve_target.py", "feature", "--work", cwd=clone)
+ran = sorted(f for f in os.listdir(tmp) if f.startswith("FETCH-HOOK-RAN-"))
+fetched = subprocess.run(["git", "-C", clone, "-c", "core.hooksPath=/dev/null", "log", "-1", "--format=%s", "origin/main"],
+                         capture_output=True, text=True).stdout.strip()
+check("resolve_target fetches the remote", rc.returncode == 0 and fetched == "three", (rc.stdout + rc.stderr)[-200:])
+check("git fetch in resolve_target runs none of the repository's hooks", not ran, str(ran))
+cwork = (json.loads(rc.stdout) if rc.returncode == 0 else {}).get("work") or ""
+if cwork:
+    rc = run("gather_facts.py", "--target", os.path.join(cwork, "target.json"), "--out", os.path.join(cwork, "facts.json"), cwd=clone)
+    json.dump({"s_a": "a.txt:1-1"}, open(os.path.join(cwork, "refs.json"), "w"))
+    rc2 = run("extract_snippets.py", "--target", os.path.join(cwork, "target.json"), "--refs", os.path.join(cwork, "refs.json"),
+              "--out", os.path.join(cwork, "snippets.json"), cwd=clone)
+    ran = sorted(f for f in os.listdir(tmp) if f.startswith("FETCH-HOOK-RAN-"))
+    check("gather_facts and extract_snippets run none of the repository's hooks", rc.returncode == 0 and rc2.returncode == 0 and not ran,
+          str(ran) + (rc.stderr + rc2.stderr)[-160:])
 
 shutil.rmtree(tmp, ignore_errors=True)
 print(f"\n{len(failures)} failed")

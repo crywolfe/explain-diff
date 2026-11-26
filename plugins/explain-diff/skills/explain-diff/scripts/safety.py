@@ -11,12 +11,18 @@
   gives its target path, as `git show` does, never the file it points to.
 - Masking: known token formats, assigned secrets, high-entropy strings and personal
   email addresses are masked in text that goes on the page or into the For QA file.
+- Git: every script runs git through git(), which runs no hook, fsmonitor, external diff
+  or textconv program, whatever the repository's config or a tracked hooks folder says.
+- Run files: target.json is checked with check_target() before its values reach git, so
+  a forged or damaged file cannot pass an option (such as --output=<path>) as a revision.
 """
 import datetime
+import json
 import math
 import os
 import re
 import stat
+import subprocess
 import tempfile
 
 __version__ = "1.5.0"
@@ -78,11 +84,25 @@ def inside(path, root):
     return path == root or path.startswith(root + os.sep)
 
 
-def check_out(path):
-    """The real path to write for `path`, or SystemExit when it is outside out_root() or not a regular file."""
+# The run files: each is written by one script (or, for content.json and refs.json, by the model through the run
+# guard) and read by the next. A script writes only its own name, and reads an input only under its own name, so
+# no script output, and no file the model writes, can stand in for another (a model-written content.json passed
+# as --target, or a page written over a policy copy).
+RUN_FILES = {"target.json", "facts.json", "snippets.json", "content.json", "refs.json"}
+POLICY_DIR = "policy"
+
+
+def check_out(path, own=()):
+    """The real path to write for `path`, or SystemExit when it is outside out_root() or not a regular file,
+    or when it is another script's run file or in a policy folder (`own` names what this script writes)."""
     full = os.path.abspath(os.path.expanduser(str(path)))
     parent = os.path.realpath(os.path.dirname(full))
     real = os.path.join(parent, os.path.basename(full))
+    name = os.path.basename(full)
+    if name in RUN_FILES and name not in own:
+        raise SystemExit(f"refusing to write {path}: {name} is another step's run file")
+    if os.path.basename(parent) == POLICY_DIR and POLICY_DIR not in own:
+        raise SystemExit(f"refusing to write {path}: the policy copies are written only by gather_facts.py")
     if os.environ.get(OVERRIDE) != "1":
         root = out_root()
         if not inside(parent, root):
@@ -96,9 +116,9 @@ def check_out(path):
     return real
 
 
-def private_tmp(path, text):
+def private_tmp(path, text, own=()):
     """Write text to a new 0600 file beside the checked output path; return (temp name, real path)."""
-    real = check_out(path)
+    real = check_out(path, own)
     fd, tmp = tempfile.mkstemp(prefix=".explain-diff-", suffix=os.path.splitext(real)[1], dir=os.path.dirname(real))
     try:
         with os.fdopen(fd, "w", encoding="utf-8") as f:
@@ -110,16 +130,156 @@ def private_tmp(path, text):
     return tmp, real
 
 
-def write_private(path, text):
-    tmp, real = private_tmp(path, text)
+def write_private(path, text, own=()):
+    tmp, real = private_tmp(path, text, own)
     os.replace(tmp, real)
     return real
+
+
+def load_run_file(path, name):
+    """The JSON of a run file, read only under the name the script that writes it uses (target.json, facts.json,
+    snippets.json): the run guard lets the model write content.json and refs.json, never these. Skill maintenance
+    (EXPLAIN_DIFF_ANY_OUT=1: the test suites and the example page) may use other names."""
+    if os.environ.get(OVERRIDE) != "1":
+        if os.path.basename(str(path)) != name:
+            raise SystemExit(f"{path} is not a {name}: pass the {name} the skill's script wrote")
+        if not os.path.isfile(path) or os.path.islink(path):
+            raise SystemExit(f"{path} is not a regular file")
+    with open(path, encoding="utf-8") as f:
+        return json.load(f)
 
 
 def new_work(label):
     """A fresh, unpredictable 0700 working folder under out_root()."""
     label = re.sub(r"[^A-Za-z0-9]+", "-", str(label or "change"))[:20].strip("-") or "change"
     return tempfile.mkdtemp(prefix=f"{datetime.date.today().isoformat()}-{label}-", dir=out_root())
+
+
+# ---- git ----
+# No hook or fsmonitor program runs. A clone whose core.hooksPath points at a tracked folder (husky, lefthook)
+# would otherwise run the change's own hooks: git fetch runs reference-transaction, commit runs several more.
+GIT_NO_PROGRAMS = ["-c", "core.hooksPath=/dev/null", "-c", "core.fsmonitor=false",
+                   # and paths always from the repository root: a user's diff.relative=true would make a diff run from
+                   # a subfolder print paths relative to it and leave out the files outside it.
+                   "-c", "diff.relative=false"]
+# Commands that can run an external diff or textconv program configured for a path's diff attribute.
+GIT_DIFF_COMMANDS = {"diff", "log", "show"}
+
+
+def git(*args, cwd=None, timeout=None, binary=False):
+    """Run git with no hook, fsmonitor, external diff or textconv program; returns the CompletedProcess.
+    Every explain-diff script calls git through here (evals/meta_test.py checks that)."""
+    args = list(args)
+    if args and args[0] in GIT_DIFF_COMMANDS:
+        args[1:1] = ["--no-ext-diff", "--no-textconv"]
+    env = dict(os.environ, GIT_TERMINAL_PROMPT="0")
+    if binary:
+        return subprocess.run(["git", *GIT_NO_PROGRAMS, *args], capture_output=True, cwd=cwd, timeout=timeout, env=env)
+    return subprocess.run(["git", *GIT_NO_PROGRAMS, *args], capture_output=True, text=True, encoding="utf-8",
+                          errors="replace", cwd=cwd, timeout=timeout, env=env)
+
+
+STATUS = {"A": "added", "D": "deleted", "M": "modified", "R": "renamed", "C": "copied", "T": "type changed"}
+
+
+def changed_files(diff_args, cwd=None):
+    """The changed files with line counts and status, as target.json records them (resolve_target.py writes
+    this list; check_target recomputes it), or None when git cannot diff diffArgs. -z keeps paths exact (no quoting
+    of spaces or non-ASCII names)."""
+    def diff(fmt):
+        p = git("diff", fmt, "-z", "-M", "--end-of-options", *diff_args, "--", cwd=cwd)
+        if p.returncode != 0:
+            raise ValueError(p.stderr.strip()[:300])
+        return p.stdout.split("\0")
+
+    try:
+        numstat, namestatus = diff("--numstat"), diff("--name-status")
+    except ValueError:
+        return None
+    files, tok, i = {}, numstat, 0
+    while i < len(tok):
+        head, i = tok[i], i + 1
+        if not head:
+            continue
+        add, dele, path = head.split("\t", 2)
+        if not path:  # a rename or copy: the old and new paths follow
+            path, i = tok[i + 1], i + 2
+        files[path] = {"path": path, "additions": None if add == "-" else int(add), "deletions": None if dele == "-" else int(dele)}
+    tok, i = namestatus, 0
+    while i < len(tok):
+        st, i = tok[i], i + 1
+        if not st:
+            continue
+        if st[0] in "RC":
+            old, path, i = tok[i], tok[i + 1], i + 2
+        else:
+            old, path, i = None, tok[i], i + 1
+        if path in files:
+            files[path]["status"] = STATUS.get(st[0], st)
+            if old:
+                files[path]["oldPath"] = old
+    return list(files.values())
+
+
+SHA = re.compile(r"[0-9a-f]{40}(?:[0-9a-f]{24})?")  # a full object id (SHA-1 or SHA-256)
+CONTROL_CHARS = re.compile(r"[\x00-\x1f\x7f]")
+
+
+def check_target(target):
+    """Refuse a target.json whose values could reach git as options or point outside the repository under review.
+    It must look exactly as resolve_target.py writes it: diffArgs is [mergeBase, head] as full commit ids, or
+    ["HEAD"] for uncommitted changes; every path is relative; no name starts with '-'; repo is the
+    repository the script runs in; and files is the list git gives for diffArgs. Raises SystemExit with the reason."""
+    def bad(why):
+        raise SystemExit(f"target.json is not one resolve_target.py wrote ({why}); run resolve_target.py --work again")
+
+    if not isinstance(target, dict) or target.get("status") != "ok":
+        bad("status is not ok")
+    working = target.get("mode") == "working"
+    args = target.get("diffArgs")
+    if working:
+        if args != ["HEAD"]:
+            bad("diffArgs for uncommitted changes must be [\"HEAD\"]")
+    elif not (isinstance(args, list) and len(args) == 2 and all(isinstance(a, str) and SHA.fullmatch(a) for a in args)):
+        bad("diffArgs must be two full commit ids")
+    head, base = target.get("head") or {}, target.get("base") or {}
+    if not isinstance(head, dict) or not isinstance(base, dict):
+        bad("head and base must be objects")
+    for name, value, optional in (("head.sha", head.get("sha"), working), ("base.sha", base.get("sha"), False),
+                                  ("mergeBase", target.get("mergeBase"), False)):
+        if value is None and optional:
+            continue
+        if not (isinstance(value, str) and SHA.fullmatch(value)):
+            bad(f"{name} is not a full commit id")
+    if working and base.get("sha") != target.get("mergeBase"):
+        bad("for uncommitted changes the base is the merge base (HEAD)")
+    if not working and args != [target.get("mergeBase"), head.get("sha")]:
+        bad("diffArgs is not [mergeBase, head.sha]")
+    files = target.get("files")
+    if not isinstance(files, list):
+        bad("files is not a list")
+    for f in files:
+        for key in ("path", "oldPath"):
+            p = f.get(key) if isinstance(f, dict) else None
+            if key == "oldPath" and p is None:
+                continue
+            if not isinstance(p, str) or not p or p.startswith("/") or "\0" in p:  # paths reach git after -- only
+                bad(f"files has a path that is not a relative repository path: {p!r}")
+    pr = target.get("pr")
+    if pr is not None and not (isinstance(pr, dict) and isinstance(pr.get("number"), int) and not isinstance(pr.get("number"), bool)):
+        bad("pr.number is not a number")
+    for key in ("remote", "defaultBranch"):
+        name = target.get(key)
+        if name is not None and not (isinstance(name, str) and name and not name.startswith("-") and not CONTROL_CHARS.search(name)):
+            bad(f"{key} is not a ref name (it is empty, starts with '-', or has a control character)")
+    repo = target.get("repo")
+    top = git("rev-parse", "--show-toplevel")
+    if not isinstance(repo, str) or top.returncode != 0 or os.path.realpath(repo) != os.path.realpath(top.stdout.strip()):
+        bad("repo is not the repository this script runs in; run it from the repository under review")
+    # The file list decides which files get snippets and which count as policy changes: it must be git's.
+    if files != changed_files(args, cwd=repo):
+        bad("files is not the list git gives for diffArgs" + ("; the working tree may have changed since" if working else ""))
+    return target
 
 
 def read_in_repo(repo, path):

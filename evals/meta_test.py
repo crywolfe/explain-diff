@@ -8,6 +8,7 @@
 - marketplace.json describes the plugin exactly as plugin.json does.
 - Every GitHub Action in the workflows is pinned to a full commit SHA.
 - The plugin's hooks.json parses and points at the run guard that exists.
+- Every script runs git through safety.git(), which runs no hook, fsmonitor, external diff or textconv program.
 
 Prints a last line with the failure count.
 """
@@ -70,6 +71,14 @@ cmds = [h["command"] for ev in hooks["hooks"].values() for grp in ev for h in gr
 paths = [c.split('"')[1].replace("${CLAUDE_PLUGIN_ROOT}", PLUGIN) for c in cmds if '"' in c]
 check("hooks.json runs the run guard on PreToolUse and UserPromptSubmit", set(hooks["hooks"]) == {"PreToolUse", "UserPromptSubmit"}
       and paths and all(p.endswith("run_guard.py") and os.path.isfile(p) for p in paths), str(paths))
+
+raw = []
+for name in sorted(os.listdir(SCRIPTS)):
+    if name.endswith(".py") and name != "safety.py":
+        src = open(os.path.join(SCRIPTS, name), encoding="utf-8").read()
+        raw += [f"{name}: {m.group(0)}" for m in re.finditer(r"""subprocess\.\w+\(\s*[\[(]\s*["']git["']""", src)]
+        raw += [f"{name}: {m.group(0)}" for m in re.finditer(r"""\brun\(\s*["']git["'].*fetch""", src) if "safety.git" not in src]
+check("every script runs git through safety.git() (no hooks run)", not raw, "; ".join(raw))
 
 print(f"\n{len(failures)} failed")
 sys.exit(1 if failures else 0)

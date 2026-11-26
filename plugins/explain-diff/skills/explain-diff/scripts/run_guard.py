@@ -13,12 +13,15 @@ started, or on the prompt `/explain-diff:explain-diff stop`. The state is one fi
 While a run is active every tool call is checked against an allowlist and logged (JSONL) under
 <out root>/logs/:
   - the skill's own scripts, verified byte for byte against this copy;
-  - read-only git subcommands, and gh pr view|diff|checks|list, gh repo view, gh auth status;
+  - read-only git subcommands, and gh pr view|diff|checks|list, gh repo view, gh auth status; not git status or a
+    git diff against the working tree, which refresh the index and can run a tracked post-index-change hook
+    (a diff between commits must end in --, with option values attached and plain revisions: see reads_worktree);
   - read-only shell utilities (ls, cat, head, tail, wc, rg, grep, find, sort, cut, diff, ...);
   every command's options are an exact allowlist, and every path argument must resolve (symlinks followed)
   inside the repository, the skill or the output folder, with no unquoted glob;
   - Read, Glob and Grep inside the repository, the skill and the output folder;
-  - Write and Edit only inside the output folder (content.json, refs.json);
+  - Write and Edit only to content.json and refs.json in a run's working folder (and REVIEW.md in the
+    review-md-setup worktree); the scripts' own files (target.json, facts.json, policy copies) are not writable;
   - review-init through the Skill tool, unless the repository under review supplies it.
 Everything else is denied: network tools, MCP tools, subagents, other skills, git writes, git outside the
 repository, gh writes, python -c, environment assignments, command substitution, redirection to files,
@@ -34,7 +37,6 @@ call; a state file that is not valid counts as an active run. No tool may write 
 import json
 import os
 import re
-import subprocess
 import sys
 import time
 
@@ -57,6 +59,7 @@ STOP_HINT = "end the run early with /explain-diff:explain-diff stop"
 ALWAYS_OK = {"TodoWrite", "TaskCreate", "TaskUpdate", "TaskList", "TaskGet", "AskUserQuestion", "ToolSearch"}
 READ_TOOLS = {"Read", "Glob", "Grep"}
 WRITE_TOOLS = {"Write", "Edit", "MultiEdit", "NotebookEdit"}
+WRITABLE = {"content.json", "refs.json"}  # the only files the model writes; the scripts write the rest
 
 # Every command's options are an exact allowlist: an option, a bundle of short flags, or a long option that is
 # not listed is denied. (Denylists of bad options miss bundles like -iO and options added in new versions.)
@@ -180,7 +183,7 @@ def end(session):
 
 
 def repo_root(cwd):
-    p = subprocess.run(["git", "-C", cwd or ".", "rev-parse", "--show-toplevel"], capture_output=True, text=True)
+    p = safety.git("-C", cwd or ".", "rev-parse", "--show-toplevel")
     return p.stdout.strip() if p.returncode == 0 else os.path.realpath(cwd or ".")
 
 
@@ -194,6 +197,23 @@ def start(session, cwd):
         st = _fresh_state(cwd)
         save_state(session, st)
     return st
+
+
+def writable(path):
+    """Writes go only to the files the model authors: content.json and refs.json in a run's working folder, and
+    REVIEW.md in the review-md-setup worktree (written by review-init). Everything else in the output folder is
+    written by the skill's scripts (target.json, facts.json, the policy copies, snippets.json, the page) and is
+    their input or output: a model that could rewrite it could pass options to git (target.json diffArgs), swap
+    the rules the review applies, or make the attestation name a change the page does not explain."""
+    parent, name = os.path.split(path)
+    folder = os.path.basename(parent).lower()  # macOS folders are case-insensitive: RUNS is runs
+    in_child = any(os.path.dirname(parent) == r for r in safety.known_roots())
+    if in_child and folder not in ("runs", "logs", safety.POLICY_DIR) and name in WRITABLE:
+        return
+    if in_child and folder.startswith("review-md-setup-") and name == "REVIEW.md":
+        return
+    raise Deny(f"writes go only to content.json or refs.json in the run's working folder, not {path}; "
+               "the scripts write everything else")
 
 
 def guard_files(path):
@@ -461,6 +481,11 @@ def judge_git(args, cwd, allowed):
         raise Deny("git runs only inside the repository under review (a folder elsewhere can carry a .git/config that runs programs)")
     if sub not in GIT_READ:
         raise Deny(f"git {sub or ''} is not read-only".strip())
+    if sub == "status" or (sub == "diff" and reads_worktree(rest)):
+        # Refreshing the index runs post-index-change, from a tracked hooks folder too (husky's core.hooksPath).
+        raise Deny(f"git {sub} on the working tree can run a repository hook; read the change with "
+                   "extract_snippets.py --target WORK/target.json --diff, or git diff between two commits ending in -- "
+                   "(git diff A B --, git diff A..B -- path; option values attached, as --diff-filter=M) or git diff --cached")
     if sub == "branch":
         if any(a.startswith("-") and a.split("=")[0] not in GIT_BRANCH_OK for a in rest):
             raise Deny("git branch may only list")
@@ -478,6 +503,51 @@ def judge_git(args, cwd, allowed):
         if a.startswith(("/", "~")):
             check_path(a, cwd, allowed, f"git {sub}")
     return cwd
+
+
+# git diff options that take no value of their own: anything else must carry its value attached (--opt=value, -U3),
+# so no option can consume the next word and leave one revision, which git would compare with the working tree.
+DIFF_FLAGS = {"--stat", "--shortstat", "--numstat", "--name-only", "--name-status", "--patch", "-p", "-u", "--no-patch", "-s",
+              "--raw", "--summary", "--no-color", "--cached", "--staged", "--merge-base", "-M", "--find-renames", "-R", "-w",
+              "--ignore-all-space", "-b", "--ignore-space-change", "--ignore-blank-lines", "-W", "--function-context",
+              "--full-index", "--word-diff", "--abbrev", "--no-renames", "--minimal", "--patience", "--histogram",
+              "--no-ext-diff", "--no-textconv", "-z", "--text", "-a", "--exit-code", "--quiet", "--no-prefix"}
+DIFF_ATTACHED = re.compile(r"--[a-z][a-z-]*=.*|-U[0-9]+|-M[0-9]+")
+# A revision the model may name: a ref or object id with ~N / ^N steps. No :/ search, ^{...}, ^@, ^!, @{...}
+# or leading ^: each can give one commit or none, and git then diffs the working tree.
+REV = re.compile(r"[A-Za-z0-9_@][A-Za-z0-9._/@+-]*(?:[~^][0-9]*)*")
+
+
+def rev_kind(word):
+    """'rev' for one commit, 'range' for A..B or A...B (one side may be empty), None for any other syntax."""
+    ok = lambda r: bool(REV.fullmatch(r)) and ".." not in r  # noqa: E731
+    for dots in ("...", ".."):
+        if dots in word:
+            a, b = word.split(dots, 1)
+            return "range" if (a or b) and all(ok(x) for x in (a, b) if x) else None
+    return "rev" if ok(word) else None
+
+
+def reads_worktree(rest):
+    """True unless this git diff surely compares two commits (A B or A..B / A...B, then --) or the index (--cached).
+    Any other form compares with the working tree, which refreshes the index and can run a hook. The decision
+    follows what git parses, not how a word looks:
+    - every option is a flag from DIFF_FLAGS or carries its value attached, so no word before -- is an option's value;
+    - the commit forms need the --, because git then refuses anything before it that is not a revision (without it,
+      tracked files named abc1234 and def4567 are read as paths);
+    - each revision has the plain syntax of REV."""
+    head = rest[:rest.index("--")] if "--" in rest else rest
+    opts = [a for a in head if a.startswith("-")]
+    if any(a not in DIFF_FLAGS and not DIFF_ATTACHED.fullmatch(a) for a in opts):
+        return True
+    if "--cached" in opts or "--staged" in opts:
+        return False
+    if "--" not in rest:
+        return True
+    kinds = [rev_kind(a) for a in head if not a.startswith("-")]
+    if None in kinds:
+        return True
+    return not (len(kinds) >= 2 or kinds == ["range"])
 
 
 def judge_gh(args):
@@ -569,6 +639,8 @@ def judge(payload, st, consent):
             raise Deny(f"{tool} on the run guard's own state or logs: {p}")
         if not within(p, cwd, allowed):
             raise Deny(f"{tool} outside {'the output folder' if tool in WRITE_TOOLS else 'the repository'}: {p}")
+        if tool in WRITE_TOOLS:
+            writable(resolve(p, cwd))
         return "allow", tool
     if tool == "Skill":
         name = skill_name(inp)

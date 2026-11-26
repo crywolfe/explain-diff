@@ -49,7 +49,10 @@ PR_URL = re.compile(r"^https?://[^/]+/[^/]+/[^/]+/pull/(\d+)(?:[/?#].*)?$")
 
 
 def run(*args, check=True, timeout=60, strip=True):
-    p = subprocess.run(args, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=timeout)
+    if args[0] == "git":  # no hook, fsmonitor, external diff or textconv program runs (git fetch runs hooks otherwise)
+        p = safety.git(*args[1:], timeout=timeout)
+    else:
+        p = subprocess.run(args, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=timeout)
     if check and p.returncode != 0:
         raise RuntimeError(f"{' '.join(args[:3])}: {p.stderr.strip()[:300]}")
     if p.returncode != 0:
@@ -98,37 +101,8 @@ def base_ref(remote, branch):
     return branch if sha(branch) else None
 
 
-STATUS = {"A": "added", "D": "deleted", "M": "modified", "R": "renamed", "C": "copied", "T": "type changed"}
-
-
 def file_stats(diff_args):
-    """Changed files with line counts. -z keeps paths exact (no quoting of spaces or non-ASCII names)."""
-    files = {}
-    tok = (run("git", "diff", "--numstat", "-z", "-M", *diff_args, check=False, strip=False) or "").split("\0")
-    i = 0
-    while i < len(tok):
-        head, i = tok[i], i + 1
-        if not head:
-            continue
-        add, dele, path = head.split("\t", 2)
-        if not path:  # a rename or copy: the old and new paths follow
-            path, i = tok[i + 1], i + 2
-        files[path] = {"path": path, "additions": None if add == "-" else int(add), "deletions": None if dele == "-" else int(dele)}
-    tok = (run("git", "diff", "--name-status", "-z", "-M", *diff_args, check=False, strip=False) or "").split("\0")
-    i = 0
-    while i < len(tok):
-        st, i = tok[i], i + 1
-        if not st:
-            continue
-        if st[0] in "RC":
-            old, path, i = tok[i], tok[i + 1], i + 2
-        else:
-            old, path, i = None, tok[i], i + 1
-        if path in files:
-            files[path]["status"] = STATUS.get(st[0], st)
-            if old:
-                files[path]["oldPath"] = old
-    return list(files.values())
+    return safety.changed_files(diff_args) or []
 
 
 def untracked():
@@ -142,6 +116,8 @@ def dirty():
 
 def resolve(target, base_override, fetch):
     warnings = []
+    if base_override is not None and (not base_override.strip() or base_override.lstrip().startswith("-")):
+        raise RuntimeError(f"{base_override!r} is not a base; a base cannot be empty or start with '-'")
     root = git("rev-parse", "--show-toplevel")
     remotes = (git("remote", check=False) or "").split()
     remote = "origin" if "origin" in remotes else (remotes[0] if remotes else None)
@@ -248,14 +224,14 @@ def resolve(target, base_override, fetch):
     elif "..." in t:
         a, b = t.split("...", 1)
         a, b = a or "HEAD", b or "HEAD"
-        if not sha(a) or not sha(b):
+        if a.startswith("-") or b.startswith("-") or not sha(a) or not sha(b):
             raise RuntimeError(f"cannot resolve {t}")
-        mb = git("merge-base", a, b)
+        mb = git("merge-base", sha(a), sha(b))
         out.update(mode="range", change=t, base={"ref": a, "sha": sha(a)}, head={"ref": b, "sha": sha(b)}, mergeBase=mb, diffArgs=[mb, sha(b)])
     elif ".." in t:
         a, b = t.split("..", 1)
         a, b = a or "HEAD", b or "HEAD"
-        if not sha(a) or not sha(b):
+        if a.startswith("-") or b.startswith("-") or not sha(a) or not sha(b):
             raise RuntimeError(f"cannot resolve {t}")
         out.update(mode="range", change=t, base={"ref": a, "sha": sha(a)}, head={"ref": b, "sha": sha(b)}, mergeBase=sha(a), diffArgs=[sha(a), sha(b)])
         if git("merge-base", "--is-ancestor", sha(a), sha(b), check=False) is None:
@@ -347,13 +323,18 @@ def main():
         res = resolve(a.target, a.base, not a.no_fetch)
     except Exception as e:
         res = {"status": "error", "summary": str(e), "warnings": []}
+    if res.get("status") == "ok":
+        try:  # the other scripts refuse a target that fails this check, so never write one
+            safety.check_target(res)
+        except SystemExit as e:
+            res = {"status": "error", "summary": f"resolved target failed its own check: {e}", "warnings": res.get("warnings", [])}
     out = a.out
     if a.work and res.get("status") == "ok":
         res["work"] = safety.new_work(((res.get("head") or {}).get("sha") or "")[:7] or "working")
         out = os.path.join(res["work"], "target.json")
     text = json.dumps(res, indent=2)
     if out:
-        safety.write_private(out, text + "\n")
+        safety.write_private(out, text + "\n", own=("target.json",))
     print(text)
     sys.exit({"ok": 0, "ambiguous": 2}.get(res["status"], 1))
 

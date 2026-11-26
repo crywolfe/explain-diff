@@ -2,8 +2,13 @@
 """Assemble an explain-diff page from content JSON and the fixed template.
 
 Usage:
-  python3 build_page.py --content content.json --target target.json --snippets snippets.json
-                        [--facts facts.json] [--out PAGE.html] [--qa-out FOR_QA.md] [--date YYYY-MM-DD] [--no-validate]
+  python3 build_page.py --content content.json --target target.json --snippets snippets.json --facts facts.json
+                        [--out PAGE.html] [--qa-out FOR_QA.md] [--date YYYY-MM-DD] [--no-validate]
+
+target.json, snippets.json and facts.json are read only under those names, from one run folder; the build checks the
+target against git (safety.check_target) and recomputes each policy file's hash at the base commit. Only skill
+maintenance (EXPLAIN_DIFF_ANY_OUT=1: the test suites and the example page) may build without --facts, which skips
+those checks.
 
 You write only content.json (prose, review and governance data, visualization
 specs, quiz). The template in ../templates supplies every line of CSS and
@@ -20,8 +25,8 @@ before the page is built (the line stays, the value is replaced); the build name
 
 The gate data carries provenance for the attestation: the skill version, the model the content
 names as its author (self-reported), a digest of the build inputs, the sha256 of the page itself
-(computed with the field zeroed; the validator recomputes it), and, with --facts, the path, sha256
-and commit of each policy file the review used.
+(computed with the field zeroed; the validator recomputes it), and the path, sha256 and commit
+of each policy file the review used.
 See content.example.json next to the templates for the content shape.
 
 Rich text (any prose field): plain text, with
@@ -455,6 +460,28 @@ def qa_markdown(content, target, snippets, review):
     return "\n".join(lines) + "\n"
 
 
+def check_policy(target, facts):
+    """The attestation's policy record must be what git holds: the rules come from the base commit, and each
+    file's sha256 is recomputed from that commit rather than taken from facts.json. Run from the repository."""
+    safety.check_target(target)
+    pol = facts.get("policy") or {}
+    base = target["base"]["sha"]
+    if pol.get("fromCommit") != base:
+        sys.exit(f"facts.json policy.fromCommit {str(pol.get('fromCommit'))[:12]} is not the target's base {base[:12]}; "
+                 "run gather_facts.py again")
+    for f in pol.get("files") or []:
+        path = f.get("path") if isinstance(f, dict) else None
+        if not isinstance(path, str) or not path or path.startswith(("-", "/")):
+            sys.exit(f"facts.json policy has a bad path: {path!r}")
+        if f.get("sha256") is None:
+            continue  # not read (missing or too large): the attestation records no hash for it, so a gate rejects it
+        p = safety.git("cat-file", "blob", f"{base}:{path}", binary=True, cwd=target["repo"])
+        real = hashlib.sha256(p.stdout).hexdigest() if p.returncode == 0 else None
+        if f.get("sha256") != real:
+            sys.exit(f"facts.json records {path} at the base as {str(f.get('sha256'))[:12]}, but git has "
+                     f"{str(real)[:12]}; run gather_facts.py again")
+
+
 def digest(*parts):
     h = hashlib.sha256()
     for p in parts:
@@ -474,7 +501,8 @@ def main():
     ap.add_argument("--content", required=True)
     ap.add_argument("--target", required=True, help="JSON from resolve_target.py")
     ap.add_argument("--snippets", required=True, action="append", help="JSON from extract_snippets.py (repeatable)")
-    ap.add_argument("--facts", help="facts.json from gather_facts.py: records the policy files' hashes in the attestation")
+    ap.add_argument("--facts", help="facts.json from gather_facts.py (required, except in skill maintenance): checks the target "
+                    "and records the policy files' hashes in the attestation")
     ap.add_argument("--out", help="page path (inside the explain-diff output folder)")
     ap.add_argument("--qa-out", help="For QA path (inside the explain-diff output folder)")
     ap.add_argument("--date", default=datetime.date.today().isoformat())
@@ -482,13 +510,23 @@ def main():
     a = ap.parse_args()
 
     content = json.load(open(a.content, encoding="utf-8"))
-    target = json.load(open(a.target, encoding="utf-8"))
+    # Inputs are read only under the names their scripts write (the model can write only content.json and refs.json).
+    target = safety.load_run_file(a.target, "target.json")
     snippets = {}
     for p in a.snippets:
-        snippets.update(json.load(open(p, encoding="utf-8")))
+        snippets.update(safety.load_run_file(p, "snippets.json"))
     for sid, s in snippets.items():
         s.setdefault("label", snippet_label(s))
-    facts = json.load(open(a.facts, encoding="utf-8")) if a.facts else {}
+    if not a.facts and os.environ.get(safety.OVERRIDE) != "1":
+        # Without facts.json the build checks neither the target nor the policy, and the attestation has no policy hashes.
+        sys.exit("pass --facts WORK/facts.json (from gather_facts.py): the build checks the target and the policy against git")
+    facts = safety.load_run_file(a.facts, "facts.json") if a.facts else {}
+    if a.facts:
+        # One run: the target, facts and snippets come from the same working folder, and the policy is git's.
+        folders = {os.path.dirname(os.path.realpath(p)) for p in [a.target, a.facts, *a.snippets]}
+        if len(folders) != 1 and os.environ.get(safety.OVERRIDE) != "1":
+            sys.exit("--target, --facts and --snippets must come from the same run folder")
+        check_policy(target, facts)
     inputs = digest(content, snippets, target, (facts.get("policy") or {}).get("files") or [])
     # Mask secrets and personal email addresses everywhere text reaches the page or the For QA file.
     content, snippets = copy.deepcopy(content), copy.deepcopy(snippets)

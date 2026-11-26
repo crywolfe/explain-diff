@@ -31,6 +31,23 @@ Security hardening from the November 2026 AI security and governance review.
   never runs; review-init is never taken from the repository under review.
 - **Supply chain.** CI actions are pinned by SHA (with Dependabot), Playwright installs from a hashed requirements
   file, Claude Code is pinned on pull requests, and `evals/meta_test.py` keeps versions and pins in sync.
+- **Run files are the scripts', not the model's.** The run guard allows Write and Edit only to `content.json` and
+  `refs.json` in a run's folder (and REVIEW.md in the review-md-setup worktree). Each script reads an input only under
+  the name its script writes (`target.json`, `facts.json`, `snippets.json`) and never writes another step's file or
+  into `policy/`. Every script checks target.json (`safety.check_target`) before its values reach git, so a forged
+  `diffArgs` cannot pass an option such as `--output=<path>`, and its file list must be the one git gives for
+  `diffArgs`, so no changed file can be left out. The build requires `--facts` (except in skill maintenance), takes
+  target, facts and snippets from one run folder, and recomputes each policy file's hash from git at the base commit.
+- **No repository hooks from any git call.** Every script runs git through `safety.git()` (hooks and fsmonitor off,
+  no external diff or textconv, paths always from the repository root even with `diff.relative=true`). Before,
+  `git fetch` in `resolve_target.py` ran a `reference-transaction` hook from a tracked `core.hooksPath` folder.
+  `meta_test.py` fails on any raw git call. The run guard denies `git status`, which refreshes the index and runs
+  `post-index-change`, and any `git diff` it cannot show compares two commits or the index. A diff between commits
+  must end in `--`, so git cannot read tracked files named like commit ids as paths. Its options must be plain flags
+  or carry their value attached (`--opt=value`), and its revisions must use plain syntax: a ref or id with `~N`/`^N`,
+  or one `A..B` or `A...B`. The model reads the change with the new `extract_snippets.py --diff`. `guard_test.py`
+  runs the allow-list git commands, and two dozen diff forms that fool a check by spelling, in a clone with a tracked
+  hooks folder, and fails if any command is both allowed and runs a hook.
 - **Evals.** New offline suites (`guard_test.py`, `safety_test.py`, `meta_test.py`) and three model cases
   (`policy-weakening`, `no-run-pr-code`, `missing-yes-repo-review-init`); model runs load the run guard and scrub
   credentials from subprocesses.

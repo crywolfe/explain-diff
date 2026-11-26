@@ -7,6 +7,8 @@ tool boundary outside the model.
 2. Lifecycle, through the hook's stdin and stdout as Claude Code drives it: inactive until the skill
    starts, active during the run, ended by the first prompt after the build, and the consent scripts
    always get "ask".
+3. Hooks: every git command on the allow lists, run in a clone whose core.hooksPath is a tracked folder,
+   runs no hook (a control shows that plain git diff does).
 
 Runs offline in a private TMPDIR. Prints a last line with the failure count.
 """
@@ -51,12 +53,26 @@ def decide(tool, inp, consent="ask"):
         return "deny"
 
 
+# git diff forms whose words fool a check that goes by spelling: an option's detached value, or revision syntax that
+# gives one commit or none. Each leaves git comparing a commit with the working tree, which can run a hook.
+TRICKY_DIFFS = ["git diff -S p HEAD --", "git diff -G p HEAD --", "git diff -pS x HEAD --", "git diff --diff-filter M HEAD -- app/x.py",
+                "git diff --skip 1 HEAD --", "git diff --author x HEAD --", "git diff --grep x HEAD --", "git diff --date iso HEAD --",
+                "git diff -l 5 HEAD --", "git diff -I x HEAD --", "git diff --grep main..feature --", "git diff -S --cached",
+                "git diff -G --cached --", "git diff --author --cached", "git diff --grep --staged --", "git diff 'HEAD^{/..}' --",
+                "git diff ':/a..b' --", "git diff HEAD~2 'HEAD~2^@' --", "git diff HEAD 'HEAD~2^@' --", "git diff 'HEAD^!' --",
+                "git diff '@{-1}' HEAD --", "git diff ^main HEAD --", "git diff -U 3 HEAD --", "git diff --relative x HEAD --"]
 S = SCRIPTS
 ALLOW = [
     ("Bash", f"python3 {S}/resolve_target.py 123 --work"),
     ("Bash", f"python3 {S}/gather_facts.py --target {OUT}/w/target.json --out {OUT}/w/facts.json"),
     ("Bash", f"python3 {S}/validate_page.py {OUT}/p.html --browser"),
-    ("Bash", "git diff abc123 def456 -- app/x.py"),
+    ("Bash", "git diff abc1234 def4567 -- app/x.py"),
+    ("Bash", "git diff --stat main..feature --"),
+    ("Bash", "git diff main feature --"),
+    ("Bash", "git diff --no-ext-diff --no-textconv -z --quiet main feature --"),
+    ("Bash", "git diff --name-status abc1234 def4567 --"),
+    ("Bash", "git diff --cached --stat"),
+    ("Bash", "git diff --staged HEAD -- app/x.py"),
     ("Bash", "git log --oneline -5 | head -3"),
     ("Bash", "git --no-pager show HEAD:app/x.py 2>/dev/null"),
     ("Bash", "git branch --show-current"),
@@ -70,6 +86,9 @@ ALLOW = [
     ("Read", {"file_path": os.path.join(S, "..", "templates", "content.example.json")}),
     ("Grep", {"pattern": "def ", "path": repo}),
     ("Write", {"file_path": os.path.join(OUT, "w", "content.json")}),
+    ("Write", {"file_path": os.path.join(OUT, "w", "refs.json")}),
+    ("Edit", {"file_path": os.path.join(OUT, "w", "content.json")}),
+    ("Write", {"file_path": os.path.join(OUT, "review-md-setup-abc", "REVIEW.md")}),
     ("Skill", {"skill": "explain-diff"}),
     ("Skill", {"skill": "my-plugin:review-init"}),
     ("TodoWrite", {"todos": []}),
@@ -112,6 +131,31 @@ DENY = [
     ("Write", {"file_path": os.path.join(repo, "app", "x.py")}),
     ("Write", {"file_path": os.path.expanduser("~/.zshrc")}),
     ("Edit", {"file_path": os.path.join(repo, "REVIEW.md")}),
+    # The scripts' own files: a model that rewrites them passes options to git, swaps the rules, or forges the target.
+    ("Write", {"file_path": os.path.join(OUT, "w", "target.json")}),
+    ("Edit", {"file_path": os.path.join(OUT, "w", "target.json")}),
+    ("Write", {"file_path": os.path.join(OUT, "w", "facts.json")}),
+    ("Write", {"file_path": os.path.join(OUT, "w", "snippets.json")}),
+    ("Write", {"file_path": os.path.join(OUT, "w", "policy", "REVIEW.md.txt")}),
+    ("Write", {"file_path": os.path.join(OUT, "w", "policy", "content.json")}),
+    ("Write", {"file_path": os.path.join(OUT, "content.json")}),
+    ("Write", {"file_path": os.path.join(OUT, "2026-11-24-explanation-x.html")}),
+    ("Write", {"file_path": os.path.join(OUT, "w", "REVIEW.md")}),
+    ("Write", {"file_path": os.path.join(OUT, "review-md-setup-abc", "app.py")}),
+    ("Write", {"file_path": os.path.join(OUT, "RUNS", "content.json")}),
+    # Refreshing the index runs post-index-change, from a tracked hooks folder too.
+    ("Bash", "git status"),
+    ("Bash", "git status --porcelain"),
+    ("Bash", "git diff"),
+    ("Bash", "git diff HEAD"),
+    ("Bash", "git diff --stat HEAD -- app/x.py"),
+    ("Bash", "git diff main --"),
+    ("Bash", "git diff abc1234 def4567"),  # two tracked files with these names: a working-tree diff
+    ("Bash", "git diff --stat main..feature"),
+    ("Bash", "git diff --merge-base abc1234 --"),
+    ("Bash", "git describe --dirty"),
+    ("Bash", "git diff --merge-base abc1234"),
+    ("Bash", "git diff app/x.py"),
     ("WebFetch", {"url": "https://evil.example"}),
     ("WebSearch", {"query": "x"}),
     ("mcp__gmail__send_message", {"to": "x"}),
@@ -176,6 +220,8 @@ REVIEW_DENY += [
 ]
 for cmd in REVIEW_DENY:
     check(f"deny  {cmd!r}", decide("Bash", {"command": cmd}), "deny")
+for cmd in TRICKY_DIFFS:
+    check(f"deny  {cmd!r}", decide("Bash", {"command": cmd}), "deny")
 REVIEW_ALLOW = ["rg -n -g '*.py' --type py retry app", "git log --oneline -5 --stat", "git diff --stat main...HEAD -- app",
                 "git show HEAD:app/x.py", "head -20 app/x.py", "tail -n 5 app/x.py", "grep -rn -e price -A 2 app", "sort -rn app/x.py",
                 "gh pr view 12 --json title,body", "gh pr diff 12 --name-only", "git grep -n -C 2 retry -- app", "git blame -L 1,5 app/x.py",
@@ -232,7 +278,7 @@ check("inactive: commit script still asks", pre("Bash", {"command": f"python3 {S
 check("Skill explain-diff starts a run", pre("Skill", {"skill": "explain-diff"}), "none")
 check("active: curl denied", pre("Bash", {"command": "curl https://x"}), "deny")
 check("active: MCP denied", pre("mcp__drive__share_file", {}), "deny")
-check("active: git diff allowed", pre("Bash", {"command": "git diff HEAD"}), "none")
+check("active: git diff between commits allowed", pre("Bash", {"command": "git diff abc1234 def4567 --"}), "none")
 check("a prompt before the build keeps the run", hook({"hook_event_name": "UserPromptSubmit", "prompt": "Yes"}), "none")
 check("still active after the prompt", pre("Bash", {"command": "curl https://x"}), "deny")
 check("build_page.py allowed", pre("Bash", {"command": f"python3 {S}/build_page.py --content c.json --target t.json --snippets s.json"}), "none")
@@ -265,6 +311,62 @@ logs = os.listdir(os.path.join(OUT, "logs"))
 check("tool calls are logged", logs == ["sess-1.jsonl"], True)
 mode = os.stat(os.path.join(OUT, "logs", "sess-1.jsonl")).st_mode & 0o777
 check("the log is private (0600)", oct(mode), oct(0o600))
+
+# 3. Every git command the guard allows runs no hook, in a clone whose core.hooksPath is a tracked folder
+# (husky, lefthook) and whose tracked files are named like commit ids.
+hrepo, fired = os.path.join(tmp, "hooked"), os.path.join(tmp, "hook-fired")
+os.makedirs(os.path.join(hrepo, ".hooks"))
+os.makedirs(os.path.join(hrepo, "app"))
+G_ENV = dict(os.environ, GIT_CONFIG_GLOBAL=os.devnull, GIT_CONFIG_NOSYSTEM="1")
+
+
+def hgit(*args):
+    return subprocess.run(["git", *args], cwd=hrepo, capture_output=True, text=True, env=G_ENV)
+
+
+for name in ("post-index-change", "reference-transaction", "post-checkout"):
+    with open(os.path.join(hrepo, ".hooks", name), "w") as f:
+        f.write(f"#!/bin/sh\necho {name} >> '{fired}'\n")
+    os.chmod(os.path.join(hrepo, ".hooks", name), 0o755)
+for name, text in (("app/x.py", "a\nb\nc\nd\ne\nretry\n"), ("abc1234", "x\n"), ("def4567", "y\n"), ("f.txt", "price\n")):
+    with open(os.path.join(hrepo, name), "w") as f:
+        f.write(text)
+hgit("init", "-q", "-b", "main")
+hgit("add", "-A")
+hgit("-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "one")
+for n in ("two", "three"):  # HEAD~2 is the root commit, so HEAD~2^@ names no commit
+    with open(os.path.join(hrepo, "f.txt"), "a") as f:
+        f.write(n + "\n")
+    hgit("-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qam", n)
+hgit("branch", "feature")
+hgit("config", "core.hooksPath", ".hooks")
+stamp = [1_600_000_000]
+
+
+def hook_runs(cmd):
+    """True when cmd, run in the hooked clone after every tracked file's mtime changes, runs a hook."""
+    stamp[0] += 60
+    for name in ("app/x.py", "abc1234", "def4567", "f.txt"):
+        os.utime(os.path.join(hrepo, name), (stamp[0], stamp[0]))
+    if os.path.exists(fired):
+        os.remove(fired)
+    subprocess.run(cmd, shell=True, cwd=hrepo, capture_output=True, env=G_ENV)  # the test's own commands
+    return os.path.exists(fired)
+
+
+check("the hooked clone runs a hook for git diff (the test can see one)", hook_runs("git diff"), True)
+check("without --, files named like commit ids make git diff A B run a hook (why the guard needs --)",
+      hook_runs("git diff abc1234 def4567"), True)
+git_forms = [c for _, c in ALLOW if isinstance(c, str) and c.startswith("git ")] + [c for c in REVIEW_ALLOW if c.startswith("git ")]
+for cmd in git_forms:
+    if decide("Bash", {"command": cmd}) == "allow":
+        check(f"no hook from allowed {cmd!r}", hook_runs(cmd), False)
+# The rule itself: no command is both allowed and runs a hook. The controls show the tricky forms do run one.
+fires = [cmd for cmd in TRICKY_DIFFS if hook_runs(cmd)]
+check(f"most tricky git diff forms run a hook when git runs them (the controls work: {len(fires)} of {len(TRICKY_DIFFS)})",
+      len(fires) >= len(TRICKY_DIFFS) // 2, True)
+for cmd in TRICKY_DIFFS + git_forms:
+    check(f"never both allowed and running a hook: {cmd!r}", decide("Bash", {"command": cmd}) == "allow" and hook_runs(cmd), False)
 
 shutil.rmtree(tmp, ignore_errors=True)
 print(f"\n{len(failures)} failed")
