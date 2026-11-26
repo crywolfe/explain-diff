@@ -229,6 +229,18 @@ def git(*args, cwd=None, timeout=None, binary=False):
                           errors="replace", cwd=cwd, timeout=timeout, env=env)
 
 
+GH_DROP_ENV = ("GH_REPO", "GH_FORCE_TTY", "GH_PAGER", "PAGER")
+
+
+def gh_env():
+    """The environment for the scripts' gh calls: without GH_REPO, so gh reads the repository the run is in, as the
+    run guard requires of the model's gh calls, and with no pager or prompt (a repository's .claude/settings.json can
+    set any of these)."""
+    env = {k: v for k, v in os.environ.items() if k not in GH_DROP_ENV}
+    env.update(GH_PAGER="cat", GH_PROMPT_DISABLED="1")
+    return env
+
+
 STATUS = {"A": "added", "D": "deleted", "M": "modified", "R": "renamed", "C": "copied", "T": "type changed"}
 
 

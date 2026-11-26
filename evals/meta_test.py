@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """Checks that the repository's versions, pins and plugin metadata agree, so a release ships what was tested.
 
-- One Playwright version everywhere: validate_page.py, the CI requirements (with hashes), and the
-  run-offline-evals skill.
+- One Playwright version: validate_page.py and the CI requirements (with hashes). The run-offline-evals skill
+  installs from those requirements with hash checks, runs only when the user starts it, and uses no fixed /tmp path.
 - The plugin version in plugin.json equals the scripts' version (safety.__version__), CHANGELOG.md has an
   entry for it, and the README's pinned install names its tag.
 - A version the CHANGELOG marks released has a model-eval run record in evals/RESULTS.md that meets a bar.
@@ -40,9 +40,15 @@ def read(*parts):
 
 pw_validator = re.search(r'PLAYWRIGHT = "playwright==([\d.]+)"', read(SCRIPTS, "validate_page.py")).group(1)
 pw_ci = re.search(r"^playwright==([\d.]+)", read("evals", "requirements-ci.txt"), re.M).group(1)
-pw_skill = set(re.findall(r"playwright==([\d.]+)", read(".claude", "skills", "run-offline-evals", "SKILL.md")))
-check("one Playwright version: validator, CI and the offline-evals skill", pw_validator == pw_ci and pw_skill == {pw_validator},
-      f"validator {pw_validator}, CI {pw_ci}, skill {sorted(pw_skill)}")
+check("one Playwright version: validator and CI", pw_validator == pw_ci, f"validator {pw_validator}, CI {pw_ci}")
+offline = read(".claude", "skills", "run-offline-evals", "SKILL.md")
+front = offline.split("---", 2)[1] if offline.startswith("---") else ""
+check("the offline-evals skill installs Playwright only from the hashed CI requirements",
+      "--require-hashes" in offline and "-r evals/requirements-ci.txt" in offline and not re.search(r"--with[ =]playwright", offline))
+check("the offline-evals skill runs only when the user starts it (it runs the checkout's code)",
+      re.search(r"^disable-model-invocation:\s*true\s*$", front, re.M) is not None)
+check("the offline-evals skill pre-approves no tools (allowed-tools grants, it does not limit)", "allowed-tools" not in front)
+check("the offline-evals skill writes to no fixed temp path", not re.search(r"(?<![\w$])(?:/private|/var)?/tmp/", offline))
 req = read("evals", "requirements-ci.txt")
 pkgs = re.findall(r"^([A-Za-z0-9_.-]+)==", req, re.M)
 check("every CI requirement carries hashes", pkgs and all(re.search(rf"^{re.escape(p)}==[^\n]*\\\n\s+--hash=sha256:", req, re.M) for p in pkgs), str(pkgs))
@@ -119,6 +125,13 @@ for name in sorted(os.listdir(SCRIPTS)):
         raw += [f"{name}: {m.group(0)}" for m in re.finditer(r"""subprocess\.\w+\(\s*[\[(]\s*["']git["']""", src)]
         raw += [f"{name}: {m.group(0)}" for m in re.finditer(r"""\brun\(\s*["']git["'].*fetch""", src) if "safety.git" not in src]
 check("every script runs git through safety.git() (no hooks run)", not raw, "; ".join(raw))
+loose_gh = []
+for name in sorted(os.listdir(SCRIPTS)):
+    if name.endswith(".py"):
+        src = open(os.path.join(SCRIPTS, name), encoding="utf-8").read()
+        loose_gh += [f"{name}: {m.group(0)[:40]}" for m in re.finditer(r"""subprocess\.\w+\(\s*\[\s*["']gh["'][^\n]*(?:\n[^\n]*){0,2}""", src)
+                     if "gh_env()" not in m.group(0)]
+check("every script's gh call runs with safety.gh_env() (no GH_REPO, pager or forced terminal)", not loose_gh, "; ".join(loose_gh))
 
 print(f"\n{len(failures)} failed")
 sys.exit(1 if failures else 0)

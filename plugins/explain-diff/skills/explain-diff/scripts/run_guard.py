@@ -14,10 +14,11 @@ cleaned on reboot), SessionStart and the next prompt re-arm the run from the ses
 allows `resolve_target.py --work`, it leaves a one-use note (runs/ticket.<session>.json) that the resolver needs
 to start, so a session whose hooks are off does not run the skill unguarded.
 
-While a run is active every tool call is checked against an allowlist and logged (JSONL) under
-<out root>/logs/:
+While a run is active every tool call is checked against an allowlist and logged (JSONL, with secrets and personal
+email addresses masked; logs older than LOG_DAYS are deleted when a run starts) under <out root>/logs/:
   - the skill's own scripts, verified byte for byte against this copy;
-  - read-only git subcommands, and gh pr view|diff|checks|list, gh repo view, gh auth status; not git status or a
+  - read-only git subcommands, and gh pr view|diff|checks|list, gh repo view, gh auth status on the repository under
+    review only (PR numbers, no --repo, --search, URL or GH_REPO); not git status or a
     git diff against the working tree, which refresh the index and can run a tracked post-index-change hook
     (a diff between commits must end in --, with option values attached and plain revisions: see reads_worktree);
   - read-only shell utilities (ls, cat, head, tail, wc, rg, grep, find, sort, cut, diff, ...);
@@ -47,6 +48,7 @@ call; a state file that is not valid counts as an active run. No tool may write 
 import json
 import os
 import re
+import stat
 import sys
 import time
 
@@ -140,14 +142,22 @@ GIT_SHORT = "pPqsrtdzlnwicEFhIvbuaoMWRBCAx0123456789"
 GIT_SHORT_VALUE = {"": "ULeGSf", "grep": "ULeGSfABCm", "log": "ULeGSfn", "rev-list": "ULeGSfn", "shortlog": "ULeGSfn"}
 GIT_BRANCH_OK = {"--show-current", "--list", "-a", "--all", "-r", "--remotes", "-v", "-vv", "--contains", "--merged", "--no-merged",
                  "--sort", "--format", "--points-at"}
-# gh: (flags, options that take a value) per command. No --web, --jq, --template or --show-token.
-GH = {("pr", "view"): ({"--comments", "-c"}, {"--json", "--repo", "-R"}),
-      ("pr", "diff"): ({"--name-only", "--patch"}, {"--color", "--repo", "-R"}),
-      ("pr", "checks"): ({"--required"}, {"--json", "--repo", "-R"}),
-      ("pr", "list"): (set(), {"--state", "-s", "--limit", "-L", "--head", "-H", "--base", "-B", "--author", "-A", "--search", "-S",
-                               "--json", "--label", "-l", "--repo", "-R"}),
-      ("repo", "view"): (set(), {"--json"}),
-      ("auth", "status"): (set(), {"--hostname", "-h"})}
+# gh: (flags, options that take a value, PR selectors allowed) per command. No --web, --jq, --template or --show-token,
+# and nothing that names another repository: no --repo, no --search (its repo: qualifier), no URL or OWNER/REPO argument.
+# gh then reads the repository under review, from the remotes of the folder it runs in (judge_gh checks the folder).
+GH = {("pr", "view"): ({"--comments", "-c"}, {"--json"}, 1),
+      ("pr", "diff"): ({"--name-only", "--patch"}, {"--color"}, 1),
+      ("pr", "checks"): ({"--required"}, {"--json"}, 1),
+      ("pr", "list"): (set(), {"--state", "-s", "--limit", "-L", "--head", "-H", "--base", "-B", "--author", "-A",
+                               "--json", "--label", "-l"}, 0),
+      ("repo", "view"): (set(), {"--json"}, 0),
+      ("auth", "status"): (set(), {"--hostname", "-h"}, 0)}
+GH_PR_NUMBER = re.compile(r"^#?[0-9]{1,9}$")
+# Environment that points gh at another repository (GH_REPO), or makes it start its pager, which runs any program
+# (GH_FORCE_TTY: gh pages only to a terminal, and Bash here has none). The repository's .claude/settings.json can set
+# them. GH_HOST only picks among this repository's own remotes, and GH_PAGER, PAGER or a GH_CONFIG_DIR pager need a
+# terminal, so they are left alone.
+GH_UNSAFE_ENV = ("GH_REPO", "GH_FORCE_TTY")
 SENSITIVE = re.compile(r"/\.(?:ssh|aws|gnupg|netrc|npmrc|pypirc|docker|kube)(?:/|$)|/\.config/(?:gh|gcloud)(?:/|$)|/\.git-credentials$|^/etc/(?:passwd|shadow)$")
 CONTROL = re.compile(r"[\x00-\x1f\x7f]")
 REDIRECT_RX = re.compile(r"(?:2>/dev/null|2>&1|&>/dev/null|>/dev/null)(?=[\s;|&]|$)")
@@ -291,6 +301,7 @@ def start(session, cwd):
     if not st:
         st = _fresh_state(cwd)
         save_state(session, st)
+        prune_logs()
     return st
 
 
@@ -316,11 +327,56 @@ def guard_files(path):
     return any(safety.inside(path, os.path.join(r, d)) for r in safety.known_roots() for d in ("runs", "logs"))
 
 
+LOG_DAYS = 30
+LOG_MASK_CHARS = 8192
+LOG_NAME = re.compile(r"^[A-Za-z0-9_-]{1,80}\.jsonl$")
+
+
+def masked(value):
+    """`value` (a tool input or a reason) with secrets and personal email addresses masked as the page masks them.
+    Masking runs on the parsed strings, before JSON escaping and before the log cuts the input short, so a quoted
+    secret still matches and no half token is left."""
+    def cut(v):  # only the first 600 characters are logged; masking a whole 10 MB Write would be slow
+        if isinstance(v, str):
+            return v[:LOG_MASK_CHARS]
+        if isinstance(v, dict):
+            return {k: cut(x) for k, x in v.items()}
+        if isinstance(v, list):
+            return [cut(x) for x in v]
+        return v
+    copy = cut(json.loads(json.dumps(value, ensure_ascii=False)))
+    if isinstance(copy, str):
+        return safety.mask(copy)[0]
+    safety.mask_tree(copy)
+    return copy
+
+
+def prune_logs(now=None):
+    """Delete this user's run logs older than LOG_DAYS: only regular files with the guard's own names, not symlinks."""
+    d = os.path.join(safety.out_root(), "logs")
+    cutoff = (now or time.time()) - LOG_DAYS * 86400
+    try:
+        if os.path.islink(d):
+            return
+        names = os.listdir(d)
+    except OSError:
+        return
+    for name in names:
+        path = os.path.join(d, name)
+        try:
+            st = os.lstat(path)
+            if LOG_NAME.match(name) and stat.S_ISREG(st.st_mode) and st.st_mtime < cutoff:
+                os.unlink(path)
+        except OSError:
+            pass
+
+
 def log(session, payload, decision, reason):
     d = os.path.join(safety.out_root(), "logs")
     os.makedirs(d, mode=0o700, exist_ok=True)
     rec = {"ts": time.time(), "session": session, "tool": payload.get("tool_name"),
-           "input": json.dumps(payload.get("tool_input"), ensure_ascii=False)[:600], "decision": decision, "reason": reason}
+           "input": json.dumps(masked(payload.get("tool_input")), ensure_ascii=False)[:600], "decision": decision,
+           "reason": masked(reason)}
     fd = os.open(os.path.join(d, re.sub(r"[^A-Za-z0-9_-]", "_", str(session))[:80] + ".jsonl"), os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
     with os.fdopen(fd, "a", encoding="utf-8") as f:
         f.write(json.dumps(rec, ensure_ascii=False) + "\n")
@@ -645,24 +701,38 @@ def reads_worktree(rest):
     return not (len(kinds) >= 2 or kinds == ["range"])
 
 
-def judge_gh(args):
-    pos = [a for a in args if not a.startswith("-")]
-    key = tuple(pos[:2])
+def judge_gh(args, cwd, repo):
+    """The command's (subcommand, verb) if it only reads the repository under review, else Deny."""
+    key = tuple(a for a in args[:2])
     if key not in GH:
         raise Deny(f"gh {' '.join(key)} is not a read")
-    flags, values = GH[key]
-    i = 0
+    here = resolve(".", cwd)
+    top = safety.git("-C", here, "rev-parse", "--show-toplevel") if os.path.isdir(here) else None
+    if not (top and top.returncode == 0 and os.path.realpath(top.stdout.strip()) == os.path.realpath(repo)):
+        raise Deny("gh runs only in the repository under review, not in a folder inside it with its own .git (a submodule or "
+                   "a vendored clone) or around it: gh reads the repository from the nearest .git's remotes")
+    unsafe = [v for v in GH_UNSAFE_ENV if os.environ.get(v)]
+    if unsafe:
+        raise Deny(f"gh with {', '.join(unsafe)} set in the session's environment, which points it at another repository "
+                   "or makes it run a pager program")
+    flags, values, selectors = GH[key]
+    pos, i = [], 2
     while i < len(args):
         a = args[i]
         name, eq, _ = a.partition("=")
         if not a.startswith("-"):
+            pos.append(a)
             i += 1
         elif name in flags and not eq:
             i += 1
         elif name in values:
+            if not eq and i + 1 >= len(args):
+                raise Deny(f"gh {' '.join(key)} option {name} needs a value")
             i += 1 if eq else 2
         else:
             raise Deny(f"gh {' '.join(key)} option {name} is not on the allowlist")
+    if len(pos) > selectors or not all(GH_PR_NUMBER.match(p) for p in pos):
+        raise Deny(f"gh {' '.join(key)} takes only a pull request number of the repository under review, not {' '.join(pos)}")
     return key
 
 
@@ -693,7 +763,7 @@ def judge_segment(words, cwd, st, consent):
     if cmd == "git":
         return "allow", "git", judge_git(args, cwd, allowed), None
     if cmd == "gh":
-        return "allow", "gh " + " ".join(judge_gh(args)), cwd, None
+        return "allow", "gh " + " ".join(judge_gh(args, cwd, allowed[0])), cwd, None
     if cmd == "find":
         judge_find(args, cwd, allowed)
         return "allow", "find", cwd, None

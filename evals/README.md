@@ -23,7 +23,7 @@ This folder tests the skill's output and its handling of hostile input. It follo
 
 ## Run the offline checks
 
-Requires Python 3 and Playwright with Chromium (`pip install playwright`, then `playwright install chromium`). To use a Chromium that is already installed, set `CHROMIUM_PATH` to its executable instead of running `playwright install`.
+Requires Python 3 and Playwright with Chromium. Install Playwright with hash checks, as CI does (`pip install --require-hashes -r evals/requirements-ci.txt`, then `playwright install chromium`). To use a Chromium that is already installed, set `CHROMIUM_PATH` to its executable instead of running `playwright install`. In Claude Code, `/run-offline-evals` installs Playwright the same way into a private folder (Chromium must already be installed) and runs every suite with the session's tokens left out of the environment. It runs only when you start it, because these suites are this checkout's code: on a contributor's branch, read the diff first or let CI run them.
 
 ```
 python3 evals/meta_test.py

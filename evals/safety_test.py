@@ -477,6 +477,13 @@ if cwork:
     check("gather_facts and extract_snippets run none of the repository's hooks", rc.returncode == 0 and rc2.returncode == 0 and not ran,
           str(ran) + (rc.stderr + rc2.stderr)[-160:])
 
+os.environ.update(GH_REPO="someone/else", GH_FORCE_TTY="1", PAGER="sh -c x")
+ge = safety.gh_env()
+check("the scripts' gh calls run without GH_REPO, a forced terminal or a pager program",
+      not {"GH_REPO", "GH_FORCE_TTY", "PAGER"} & set(ge) and ge.get("GH_PAGER") == "cat" and ge.get("PATH") == os.environ.get("PATH"))
+for k in ("GH_REPO", "GH_FORCE_TTY", "PAGER"):
+    del os.environ[k]
+
 shutil.rmtree(tmp, ignore_errors=True)
 print(f"\n{len(failures)} failed")
 sys.exit(1 if failures else 0)

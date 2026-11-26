@@ -41,6 +41,18 @@ Security hardening from the November 2026 AI security and governance review.
   the skill ran.
 - **Edited attestations do not count.** The gate workflow ignores an attestation comment that was edited after it
   was posted (`fromComment` in `docs/gate/validate.js`); a user with write access can edit another user's comment.
+- **`gh` reads only the repository under review.** The run guard no longer allows `--repo`, `--search` (its
+  `repo:` qualifier), a PR URL or an `OWNER/REPO` argument: `gh pr view|diff|checks` take only a PR number, and
+  `gh` runs only at the repository's own top level (not in a submodule, a vendored clone, or a folder around
+  it). It is denied while `GH_REPO` or `GH_FORCE_TTY` (which makes gh start its pager, a program of the settings'
+  choosing) is in the session's environment, and the scripts' own `gh` calls drop them and use no pager.
+- **Run logs are masked and expire.** The guard's log masks secrets and personal email addresses in each tool
+  input and reason, as the page does, and a run's start deletes logs older than 30 days.
+- **Offline evals run only when you start them.** The repository's `run-offline-evals` skill runs this checkout's
+  code, so the model can no longer start it on its own (`disable-model-invocation`), and it asks you to check
+  whose code the branch holds first. It installs Playwright from the hashed CI requirements into a private folder,
+  runs the suites without the session's tokens in their environment, reports a skipped browser check as not run,
+  and deletes its folder when done.
 - **Supported models.** A model is supported for a release only when its run record in `evals/RESULTS.md` meets its
   bar; `evals/meta_test.py` fails when the CHANGELOG marks a version released without one.
 - **Private outputs.** Every file goes in `<temp dir>/explain-diff-<uid>` (0700, files 0600); the scripts refuse other

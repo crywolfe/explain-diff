@@ -39,7 +39,7 @@ is reviewed by, or tell the reviewer it is safe.
 
 | # | Threat | Control | Enforced by | Tested by |
 | --- | --- | --- | --- | --- |
-| T1 | Prompt injection in any untrusted text makes the model run a command, fetch a URL, or use an MCP tool, during the run or on any later turn | Run guard allowlist: only the skill's scripts (byte-identical), read-only git and gh, read-only utilities confined to the repo; network, MCP, other skills and other programs denied. The run lasts until the user runs `/clear` or the stop prompt, not until the build or an idle timeout, because the text stays in context; compaction and resume keep it | `run_guard.py` hook | `guard_test.py`, model evals (`inject-after-run`) |
+| T1 | Prompt injection in any untrusted text makes the model run a command, fetch a URL, or use an MCP tool, during the run or on any later turn | Run guard allowlist: only the skill's scripts (byte-identical), read-only git, read-only gh at the top level of the repository under review (PR numbers only; no `--repo`, `--search`, URL, `GH_REPO` or `GH_FORCE_TTY`), read-only utilities confined to the repo; network, MCP, other skills and other programs denied. The run lasts until the user runs `/clear` or the stop prompt, not until the build or an idle timeout, because the text stays in context; compaction and resume keep it | `run_guard.py` hook | `guard_test.py`, model evals (`inject-after-run`) |
 | T2 | The change's tests, `conftest.py`, package scripts or Git hooks run with the reviewer's credentials | The skill never runs them; the guard denies interpreters on anything but the skill's scripts; every script runs git through `safety.git()` with hooks and fsmonitor off and no external diff or textconv (a tracked `core.hooksPath` folder would otherwise run on `git fetch`); the guard denies the model `git status` (it runs `post-index-change`) and any `git diff` it cannot show compares two commits or the index: the revisions must be followed by `--` (without it, tracked files named like commit ids are read as paths), options must be flags or carry their value attached, and revisions must use plain syntax (no `:/`, `^{}`, `^@`, `@{}`) | SKILL.md + guard + `safety.git` | `guard_test.py`, `safety_test.py`, `meta_test.py`, `no-run-pr-code` |
 | T3 | The change rewrites REVIEW.md or governance documents to weaken its own review | Rules read from the base commit; policy and agent-instruction edits ranked High and flagged for the owner | `gather_facts.py` | `facts_test.py`, `policy-weakening` |
 | T4 | A write lands in a shell startup file, a symlink target, or a shared temp path | One private output root (0700, files 0600); other paths, symlinks and loose folders refused | `safety.py` | `safety_test.py` |
@@ -59,7 +59,8 @@ is reviewed by, or tell the reviewer it is safe.
 The skill needs: read access to the repository, and for pull requests a `gh` login that can read them. Use a
 fine-grained token limited to the repositories you review with **Contents: read** and **Pull requests: read**
 (`GH_TOKEN=... claude`), not a token that can push or approve. The two commits are local and are never pushed.
-The run's tool calls are logged in `<temp dir>/explain-diff-<uid>/logs/`, and both commits carry a
+The run's tool calls are logged in `<temp dir>/explain-diff-<uid>/logs/` (0600, secrets and personal email
+addresses masked as on the page, deleted after 30 days), and both commits carry a
 `Generated-by: explain-diff/<version>` trailer, so its actions are attributable to the skill, under your identity.
 
 ## Residual risks
@@ -96,6 +97,16 @@ The run's tool calls are logged in `<temp dir>/explain-diff-<uid>/logs/`, and bo
 - Whether bypassPermissions shows a hook's "ask" is not documented, so the guard denies the commit scripts there;
   a mode the guard does not know is treated the same way.
 - `modelReported` in the attestation is what the model said it was; nothing verifies it.
+- `gh pr list` filters (`--head`, `--author`, `--label`) are free text sent to GitHub, for the repository under
+  review only. They can carry a few words of the change's text to GitHub's API, nowhere else. `GH_HOST`,
+  `GH_PAGER`, `PAGER` and `GH_CONFIG_DIR` set by the repository's settings are left alone: gh pages only to a
+  terminal, the model's Bash has none, and `GH_FORCE_TTY` (which fakes one) is denied.
+- The run logs are masked with the page's patterns, so a secret in an unusual format can still be logged. They are
+  not tamper-evident (only the guard writes them, and the guard denies the model any write there) and the
+  attestation does not point to them.
+- The repository's `run-offline-evals` skill runs the checkout's code. Only the user can start it, and it asks
+  whose code the branch holds, but a branch can rewrite the skill too: on a contributor's branch, CI (no secrets
+  for forks) is the place to run the suites.
 
 ## Ownership and lifecycle
 

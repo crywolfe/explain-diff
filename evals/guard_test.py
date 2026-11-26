@@ -19,6 +19,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import time
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 SCRIPTS = os.path.join(ROOT, "plugins", "explain-diff", "skills", "explain-diff", "scripts")
@@ -229,6 +230,35 @@ REVIEW_ALLOW = ["rg -n -g '*.py' --type py retry app", "git log --oneline -5 --s
                 "git ls-files --others --exclude-standard", "git log -n 3 --format=%H", "git branch --show-current", "echo 'a $b'"]
 for cmd in REVIEW_ALLOW:
     check(f"allow {cmd!r}", decide("Bash", {"command": cmd}), "allow")
+# gh reads only the repository under review: no flag, argument or environment that names another one (M3).
+GH_OTHER_REPO = ["gh pr view https://github.com/someone/else/pull/1 --json body", "gh pr view 12 --repo someone/else",
+                 "gh pr view 12 -R someone/else", "gh pr view 12 -Rsomeone/else", "gh pr diff 12 --repo=someone/else",
+                 "gh pr list --search 'repo:someone/else secret'", "gh pr list -S x", "gh repo view someone/else --json description",
+                 "gh pr view someone/else#1", "gh pr view feature-branch", "gh pr view 12 13", "gh pr checks 12 -R x/y",
+                 "gh auth status somehost", "gh pr list --json", f"cd {OUT} && gh pr view 12", "gh pr view -- 12"]
+for cmd in GH_OTHER_REPO:
+    check(f"deny  {cmd!r}", decide("Bash", {"command": cmd}), "deny")
+for cmd in ["gh pr view '#12' --json title", "gh pr list --head feature --state all --json number,title", "gh pr checks 12 --required",
+            "gh pr diff 12 --patch", "gh repo view --json url", "gh auth status"]:
+    check(f"allow {cmd!r}", decide("Bash", {"command": cmd}), "allow")
+for var in ("GH_REPO", "GH_FORCE_TTY"):
+    os.environ[var] = "someone/else" if var == "GH_REPO" else "1"
+    check(f"deny  gh while {var} is set in the environment", decide("Bash", {"command": "gh pr view 12"}), "deny")
+    del os.environ[var]
+nested = os.path.join(repo, "vendor", "lib")
+os.makedirs(nested)
+subprocess.run(["git", "init", "-q", nested], check=True)
+check("deny  gh in a nested repository (a submodule or vendored clone reads its own remotes)",
+      decide("Bash", {"command": "cd vendor/lib && gh pr view 12"}), "deny")
+check("allow gh in a plain folder of the repository", decide("Bash", {"command": "cd vendor && gh pr view 12"}), "allow")
+around = {"repo": os.path.realpath(tmp), "cwd": tmp, "built": False, "started": 0}
+try:
+    G.judge({"tool_name": "Bash", "tool_input": {"command": "cd repo && gh pr view 12"}, "cwd": tmp}, around, "ask")
+    got = "allow"
+except G.Deny:
+    got = "deny"
+check("deny  gh in a sibling repository when the run started in a folder that is not one", got, "deny")
+shutil.rmtree(os.path.join(repo, "vendor"))
 check("deny  Write to the guard's state", decide("Write", {"file_path": os.path.join(OUT, "runs", "sess-1.json")}), "deny")
 check("deny  Write to the guard's logs", decide("Write", {"file_path": os.path.join(OUT, "logs", "sess-1.jsonl")}), "deny")
 st = {"repo": os.path.realpath(repo), "cwd": repo, "built": False, "started": 0}
@@ -425,6 +455,38 @@ logs = os.listdir(os.path.join(OUT, "logs"))
 check("tool calls are logged, one file per session", "sess-1.jsonl" in logs and all(n.endswith(".jsonl") for n in logs), True)
 mode = os.stat(os.path.join(OUT, "logs", "sess-1.jsonl")).st_mode & 0o777
 check("the log is private (0600)", oct(mode), oct(0o600))
+
+# The log masks secrets and personal email addresses as the page does, and old logs are deleted when a run starts (M6).
+TOKEN, MAIL = "ghp_" + "Ab1Cd2Ef3Gh4Ij5Kl6Mn7Op8Qr9St0UvWx", "jane.q.doe"
+hook({"hook_event_name": "UserPromptSubmit", "prompt": "/explain-diff 12"}, session_id="lg")
+pre("Bash", {"command": f"rg -n {TOKEN} app && echo {MAIL}@acme-widgets.co"}, session_id="lg")
+pre("Write", {"file_path": os.path.join(repo, "x.env"), "content": 'api_key = "Zx9kQ2mN8pL4wR7tYb"\n'}, session_id="lg")
+pre("Bash", {"command": f"gh pr view {TOKEN}"}, session_id="lg")
+with open(os.path.join(OUT, "logs", "lg.jsonl"), encoding="utf-8") as f:
+    logged = f.read()
+gh_rec = [r for r in map(json.loads, logged.splitlines()) if "gh pr view" in r["input"]]
+check("a deny reason that echoes a token is masked in the log",
+      bool(gh_rec) and gh_rec[0]["decision"] == "deny" and "[masked GitHub token]" in gh_rec[0]["reason"], True)
+check("the log masks a token in a command", (TOKEN in logged, "[masked GitHub token]" in logged), (False, True))
+check("the log masks a personal email address", MAIL in logged, False)
+check("the log masks a quoted secret inside a JSON-escaped input", "Zx9kQ2mN8pL4wR7tYb" in logged, False)
+check("masked() masks plain text too", G.masked(f"cat /home/{MAIL}@acme-widgets.co/{TOKEN}"), "cat /home/[masked email]@acme-widgets.co/[masked GitHub token]")
+logdir, old = os.path.join(OUT, "logs"), time.time() - (G.LOG_DAYS + 5) * 86400
+outside = os.path.join(tmp, "outside-log.jsonl")
+for name in ("old-sess.jsonl", "new-sess.jsonl", "notes.txt"):
+    with open(os.path.join(logdir, name), "w") as f:
+        f.write("{}\n")
+open(outside, "w").close()
+os.symlink(outside, os.path.join(logdir, "link-sess.jsonl"))
+for name in ("old-sess.jsonl", "notes.txt"):
+    os.utime(os.path.join(logdir, name), (old, old))
+os.utime(outside, (old, old))
+os.utime(os.path.join(logdir, "link-sess.jsonl"), (old, old), follow_symlinks=False)
+hook({"hook_event_name": "UserPromptSubmit", "prompt": "/explain-diff 13"}, session_id="prune")
+left = set(os.listdir(logdir))
+check("a run's start deletes logs older than LOG_DAYS", "old-sess.jsonl" in left, False)
+check("it keeps recent logs, other files, symlinks and what they point to",
+      ({"new-sess.jsonl", "notes.txt", "link-sess.jsonl"} <= left, os.path.exists(outside)), (True, True))
 
 # 3. Every git command the guard allows runs no hook, in a clone whose core.hooksPath is a tracked folder
 # (husky, lefthook) and whose tracked files are named like commit ids.

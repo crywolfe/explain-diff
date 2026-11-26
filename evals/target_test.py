@@ -173,6 +173,16 @@ def main():
     check("PR base is the remote base branch", d["base"]["ref"] == "origin/main", d["base"]["ref"])
     rc, d = resolve(repo, "--no-fetch", env=penv)
     check("no target on a branch with an open PR: the PR", d["mode"] == "pr", d["summary"])
+    # A repository's settings can set GH_REPO (another repository) or GH_FORCE_TTY (gh's pager runs a program):
+    # the resolver's gh calls drop them. This gh refuses to run when it sees either.
+    strict = os.path.join(tmp, "strict")
+    os.makedirs(strict)
+    open(os.path.join(strict, "gh"), "w").write('#!/bin/sh\n[ -n "$GH_REPO$GH_FORCE_TTY" ] && exit 1\nexec "%s" "$@"\n'
+                                                % os.path.join(shim, "gh"))
+    os.chmod(os.path.join(strict, "gh"), 0o755)
+    rc, d = resolve(repo, "7", "--no-fetch", env=dict(penv, PATH=strict + os.pathsep + penv["PATH"], GH_REPO="someone/else", GH_FORCE_TTY="1"))
+    check("PR number with GH_REPO and GH_FORCE_TTY in the environment: gh reads this repository", d.get("mode") == "pr"
+          and d["pr"]["number"] == 7, d["summary"])
 
     # Remote-qualified branch names and paths git would quote.
     git(repo, "checkout", "-q", "-b", "odd-names", split)

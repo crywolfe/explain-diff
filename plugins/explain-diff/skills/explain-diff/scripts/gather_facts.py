@@ -233,7 +233,8 @@ def pr_body(target):
     if not pr:
         return None
     try:
-        p = subprocess.run(["gh", "pr", "view", str(pr["number"]), "--json", "body,labels"], capture_output=True, text=True, timeout=30)
+        p = subprocess.run(["gh", "pr", "view", str(pr["number"]), "--json", "body,labels"], capture_output=True, text=True, timeout=30,
+                           env=safety.gh_env())
         d = json.loads(p.stdout) if p.returncode == 0 and p.stdout else {}
     except (FileNotFoundError, subprocess.TimeoutExpired, ValueError):
         d = {}

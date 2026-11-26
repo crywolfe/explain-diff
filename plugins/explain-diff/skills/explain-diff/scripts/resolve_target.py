@@ -52,7 +52,8 @@ def run(*args, check=True, timeout=60, strip=True):
     if args[0] == "git":  # no hook, fsmonitor, external diff or textconv program runs (git fetch runs hooks otherwise)
         p = safety.git(*args[1:], timeout=timeout)
     else:
-        p = subprocess.run(args, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=timeout)
+        p = subprocess.run(args, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=timeout,
+                           env=safety.gh_env() if args[0] == "gh" else None)
     if check and p.returncode != 0:
         raise RuntimeError(f"{' '.join(args[:3])}: {p.stderr.strip()[:300]}")
     if p.returncode != 0:
