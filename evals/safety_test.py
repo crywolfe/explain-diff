@@ -24,6 +24,7 @@ import stat
 import subprocess
 import sys
 import tempfile
+import time
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 SKILL = os.path.join(ROOT, "plugins", "explain-diff", "skills", "explain-diff")
@@ -39,6 +40,17 @@ import safety  # noqa: E402
 import validate_page as V  # noqa: E402
 
 OUT = safety.out_root()
+# resolve_target.py --work starts a run only when the run guard just allowed it for that repository. These tests
+# run the scripts directly, so run() stands in for the guard: before each --work call it writes the guard's note.
+TICKET = os.path.join(OUT, "runs", "ticket.test-session.json")
+guard_on = True
+
+
+def guard_ticket(cwd, ts=None):
+    top = subprocess.run(["git", "-C", cwd, "rev-parse", "--show-toplevel"], capture_output=True, text=True, env=ENV).stdout.strip()
+    os.makedirs(os.path.dirname(TICKET), mode=0o700, exist_ok=True)
+    with open(TICKET, "w") as f:
+        json.dump({"repo": top or cwd, "ts": time.time() if ts is None else ts}, f)
 CANARY = "CANARY-OUTSIDE-SECRET-7f3a"
 GH_TOKEN = "ghp_" + "Zx9Qw8Er7Ty6Ui5Op4As3Df2Gh1Jk0Lm9Nb8"
 failures = []
@@ -51,6 +63,8 @@ def check(name, cond, detail=""):
 
 
 def run(script, *args, cwd=None):
+    if "--work" in args and guard_on:
+        guard_ticket(cwd or os.getcwd())
     return subprocess.run([sys.executable, os.path.join(SCRIPTS, script), *args], capture_output=True, text=True, env=ENV, cwd=cwd)
 
 
@@ -61,8 +75,7 @@ open(os.path.join(brepo, "a.py"), "w").write("x = 1\n")
 subprocess.run(["git", "-C", brepo, "add", "-A"], check=True, env=ENV)
 subprocess.run(["git", "-C", brepo, "commit", "-qm", "base"], check=True, env=ENV)
 open(os.path.join(brepo, "a.py"), "w").write("x = 2\n")
-_rc = subprocess.run([sys.executable, os.path.join(SCRIPTS, "resolve_target.py"), "working", "--no-fetch", "--work"],
-                     capture_output=True, text=True, env=ENV, cwd=brepo)
+_rc = run("resolve_target.py", "working", "--no-fetch", "--work", cwd=brepo)
 BWORK = json.loads(_rc.stdout)["work"]
 subprocess.run([sys.executable, os.path.join(SCRIPTS, "gather_facts.py"), "--target", os.path.join(BWORK, "target.json"),
                 "--out", os.path.join(BWORK, "facts.json")], check=True, capture_output=True, env=ENV, cwd=brepo)
@@ -129,6 +142,30 @@ rc = run("resolve_target.py", "working", "--no-fetch", "--work", cwd=repo)
 work = (json.loads(rc.stdout) if rc.returncode == 0 else {}).get("work") or ""
 check("--work makes a private folder in the output folder", work and safety.inside(work, OUT) and stat.S_IMODE(os.stat(work).st_mode) == 0o700
       and os.path.isfile(os.path.join(work, "target.json")), work or rc.stderr[-200:])
+check("the guard's note is used up by the run it started", not os.path.exists(TICKET))
+if sys.platform == "darwin":
+    # Hooks write under the per-user /var/folders/.../T/ when TMPDIR is unset; sandboxed Bash may see another TMPDIR.
+    dut = safety._darwin_user_temp()
+    check("the macOS per-user temp folder is found and searched", dut.startswith("/") and dut in safety.temp_bases(), dut)
+guard_on = False
+for why, make in (("no note from the guard", lambda: None),
+                  ("a note for another repository", lambda: guard_ticket(brepo)),
+                  ("a note older than ten minutes", lambda: guard_ticket(repo, time.time() - 900)),
+                  ("a note dated in the future", lambda: guard_ticket(repo, time.time() + 3600))):
+    if os.path.exists(TICKET):
+        os.remove(TICKET)
+    make()
+    rc = run("resolve_target.py", "working", "--no-fetch", "--work", cwd=repo)
+    check(f"--work refuses to start a run while the run guard is not active ({why})",
+          rc.returncode != 0 and "run guard is not active" in rc.stdout, rc.stdout.strip()[-160:])
+for name in ("EXPLAIN_DIFF_ANY_OUT", "EXPLAIN_DIFF_GUARD_CONSENT"):
+    guard_ticket(repo)
+    rc = subprocess.run([sys.executable, os.path.join(SCRIPTS, "resolve_target.py"), "working", "--no-fetch", "--work"],
+                        capture_output=True, text=True, env=dict(ENV, **{name: "1"}), cwd=repo)
+    check(f"--work refuses to start a run with {name} in its environment", rc.returncode != 0 and name in rc.stdout, rc.stdout.strip()[-160:])
+guard_on = True
+if os.path.exists(TICKET):
+    os.remove(TICKET)
 rc = run("resolve_target.py", "working", "--no-fetch", "--out", os.path.join(home, "target.json"), cwd=repo)
 check("resolve_target --out outside the output folder is refused", rc.returncode != 0 and not os.path.exists(os.path.join(home, "target.json")), rc.stderr[-160:])
 
@@ -170,7 +207,6 @@ check("the masked line is kept", "[masked GitHub token]" in html and "GITHUB_TOK
 res = V.static_checks(page, []) if html else []
 check("the masked page passes S17 and S18", {c for c, lvl, _ in res if lvl == "PASS"} >= {"S17-no-secrets", "S18-page-hash"}, str([r for r in res if r[0] in ("S17-no-secrets", "S18-page-hash")]))
 
-import time  # noqa: E402
 FORMATS = {
     "AWS secret key with /": 'aws = "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"',
     "unquoted YAML password": "  password: hunter2hunter2",
@@ -276,6 +312,46 @@ rfiles = sorted(f["path"] for f in json.load(open(rtarget))["files"]) if os.path
 r1 = run("extract_snippets.py", "--target", rtarget, "--list", cwd=os.path.join(rrepo, "sub"))
 check("with diff.relative=true, a run from a subfolder lists every file from the root", res.get("status") == "ok"
       and rfiles == ["b.py", "sub/a.py"] and r1.returncode == 0, (str(rfiles) + rc.stderr + r1.stderr).strip()[-200:])
+# A change that edits Claude Code's session files, with that version in this checkout, gets a warning: Claude Code
+# loaded them before the skill ran. Its own repository, so the shared one keeps its uncommitted change.
+crepo = os.path.join(tmp, "crepo")
+subprocess.run(["git", "init", "-q", "-b", "main", crepo], check=True, env=ENV)
+open(os.path.join(crepo, "a.txt"), "w").write("a\n")
+subprocess.run(["git", "-C", crepo, "add", "-A"], check=True, env=ENV)
+subprocess.run(["git", "-C", crepo, "commit", "-qm", "base"], check=True, env=ENV)
+os.makedirs(os.path.join(crepo, ".claude"))
+open(os.path.join(crepo, ".claude", "settings.json"), "w").write('{"env": {"EXPLAIN_DIFF_ANY_OUT": "1"}}\n')
+subprocess.run(["git", "-C", crepo, "add", "--", ".claude/settings.json"], check=True, env=ENV)
+settings_warned = lambda rc: any(".claude/settings.json" in w and "checked out" in w for w in (json.loads(rc.stdout).get("warnings") or []))
+rc = run("resolve_target.py", "working", "--no-fetch", cwd=crepo)
+check("an uncommitted change to .claude/settings.json is warned about", settings_warned(rc), rc.stdout.strip()[-200:])
+subprocess.run(["git", "-C", crepo, "commit", "-qm", "settings"], check=True, env=ENV)
+open(os.path.join(crepo, "later.txt"), "w").write("x\n")
+subprocess.run(["git", "-C", crepo, "add", "--", "later.txt"], check=True, env=ENV)
+subprocess.run(["git", "-C", crepo, "commit", "-qm", "later"], check=True, env=ENV)
+rc = run("resolve_target.py", "HEAD~1", "--no-fetch", cwd=crepo)
+check("a settings change still in this checkout (a later commit on top) is warned about", settings_warned(rc), rc.stdout.strip()[-200:])
+open(os.path.join(crepo, ".claude", "settings.json"), "w").write("{}\n")
+rc = run("resolve_target.py", "HEAD~1", "--no-fetch", cwd=crepo)
+check("no settings warning when this checkout does not have the change's version", not settings_warned(rc), rc.stdout.strip()[-200:])
+# The change sets its own line endings for the file: the checkout's bytes differ from the commit's, but git says clean.
+open(os.path.join(crepo, ".gitattributes"), "w").write(".claude/** text eol=crlf\n")
+open(os.path.join(crepo, ".claude", "settings.json"), "w").write('{"hooks": {}}\n')
+subprocess.run(["git", "-C", crepo, "add", "-A"], check=True, env=ENV)
+subprocess.run(["git", "-C", crepo, "commit", "-qm", "crlf"], check=True, env=ENV)
+os.remove(os.path.join(crepo, ".claude", "settings.json"))
+subprocess.run(["git", "-C", crepo, "checkout", "--", ".claude/settings.json"], check=True, env=ENV)
+rc = run("resolve_target.py", "HEAD", "--no-fetch", cwd=crepo)
+check("a settings change checked out with the change's own eol attribute is still warned about",
+      b"\r\n" in open(os.path.join(crepo, ".claude", "settings.json"), "rb").read() and settings_warned(rc), rc.stdout.strip()[-200:])
+for name in ("claude.md", ".Claude/settings.local.json"):
+    os.makedirs(os.path.join(crepo, os.path.dirname(name) or "."), exist_ok=True)
+    open(os.path.join(crepo, name), "w").write("x\n")
+    subprocess.run(["git", "-C", crepo, "add", "-f", "--", name], check=True, env=ENV)
+    rc = run("resolve_target.py", "working", "--no-fetch", cwd=crepo)
+    check(f"a checked-out change to {name} is warned about (names are matched without case)",
+          any(name.lower() in w.lower() and "checked out" in w for w in (json.loads(rc.stdout).get("warnings") or [])), rc.stdout.strip()[-300:])
+    subprocess.run(["git", "-C", crepo, "reset", "-q", "--", name], check=True, env=ENV)
 # Files named like options really in the change (added to the index), and legal but unusual branch names.
 odd = ["-x.txt", "--output=PWNED-name"]
 for name in odd:

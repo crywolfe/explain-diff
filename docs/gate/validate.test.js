@@ -1,7 +1,7 @@
 'use strict';
 const test = require('node:test');
 const assert = require('node:assert');
-const { validate, parseComment } = require('./validate.js');
+const { validate, parseComment, fromComment } = require('./validate.js');
 
 const H = 'a'.repeat(40), M = 'b'.repeat(40), P = 'c'.repeat(64), R = 'd'.repeat(64);
 const PR = { headSha: H, baseRef: 'main', mergeBase: M, governanceFiles: ['docs/governance/GOV.md'],
@@ -35,4 +35,21 @@ test('parseComment reads the fenced JSON and ignores other comments', () => {
   assert.deepStrictEqual(parseComment('explain-diff attestation\n```json\n{"source":"explain-diff"}\n```'), { source: 'explain-diff' });
   assert.strictEqual(parseComment('LGTM\n```json\n{}\n```'), null);
   assert.strictEqual(parseComment('explain-diff attestation\n```json\n{bad\n```'), null);
+});
+
+const comment = (over = {}) => ({ body: 'explain-diff attestation\n```json\n{"source":"explain-diff"}\n```', user: { login: 'rev' },
+  created_at: '2026-11-26T10:00:00Z', updated_at: '2026-11-26T10:00:00Z', ...over });
+test('an unedited attestation comment counts for its author', () => {
+  assert.deepStrictEqual(fromComment(comment()), { attestation: { source: 'explain-diff' }, login: 'rev' });
+});
+test('an edited attestation comment does not count', () => {
+  const r = fromComment(comment({ updated_at: '2026-11-27T09:00:00Z' }));
+  assert.strictEqual(r.attestation, null);
+  assert.match(r.why, /rev: the attestation comment was edited/);
+});
+test('a comment without timestamps counts as edited', () => {
+  assert.strictEqual(fromComment(comment({ created_at: undefined, updated_at: undefined })).attestation, null);
+});
+test('other comments are ignored without a reason', () => {
+  assert.deepStrictEqual(fromComment(comment({ body: 'LGTM' })), { attestation: null });
 });

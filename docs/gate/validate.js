@@ -59,4 +59,21 @@ function parseComment(body) {
   try { return JSON.parse(m[1]); } catch (e) { return null; }
 }
 
-module.exports = { validate, parseComment };
+/**
+ * The attestation in one GitHub issue comment, with who posted it, or why the comment does not count.
+ * An edited comment never counts: a user with write access can edit another user's comment, so an old
+ * attestation could be rewritten to name a new head commit and still be credited to its first author.
+ * The reviewer posts a new comment instead. A comment without both timestamps is treated as edited.
+ * @returns {{attestation: object|null, login?: string, why?: string}}
+ */
+function fromComment(c) {
+  const attestation = parseComment(c && c.body);
+  if (!attestation || !c.user || !c.user.login) return { attestation: null };
+  const login = c.user.login;
+  if (!c.created_at || c.updated_at !== c.created_at) {
+    return { attestation: null, login, why: `${login}: the attestation comment was edited; post a new comment instead` };
+  }
+  return { attestation, login };
+}
+
+module.exports = { validate, parseComment, fromComment };

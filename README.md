@@ -48,11 +48,17 @@ Without `#v1.5.0` you get whatever is on `main`, which can change between runs.
 
 - Read access to the repository, and for pull requests a `gh` login that can read them. Prefer a fine-grained token limited to the repositories you review with **Contents: read** and **Pull requests: read**, for example `GH_TOKEN=<token> claude`, over a login that can push or approve. The skill's only commits are local, and it never pushes.
 - Python 3. Playwright with Chromium (or uv) for the browser checks.
-- A current Claude model. The evals hold Opus and Sonnet to a higher bar than Haiku; see [`evals/RESULTS.md`](evals/RESULTS.md).
+- A supported Claude model. A model is supported for a release when its run record for that release in
+  [`evals/RESULTS.md`](evals/RESULTS.md) meets its bar (Opus and Sonnet are held to a higher bar than Haiku). A model
+  that misses its bar is not supported for that release: the skill may still run on it, but its pages and its
+  handling of hostile text have not met the bar. `evals/meta_test.py` fails when the CHANGELOG marks a version
+  released without a run record for it.
 
 ### The run guard
 
-The plugin installs a hook that is active only while explain-diff runs, from the moment it starts until your first message after the page is built. During that time it allows only what a run needs: the skill's own scripts, read-only `git` and `gh`, read-only shell utilities inside the repository, and writes inside the skill's output folder. It denies everything else, including network and MCP tools, other skills, and running the change's code or tests. Claude Code asks you before either of the skill's two commits. Every tool call of the run is logged in the output folder. Outside a run the hook does nothing.
+The plugin installs a hook that is active from the moment explain-diff starts until you run `/clear` or `/explain-diff:explain-diff stop`. It stays on after the page is built: the change's text (diff, PR, repository files) is still in the conversation, and an instruction hidden in it could act on a later turn. During that time it allows only what a run needs: the skill's own scripts, read-only `git` and `gh`, read-only shell utilities inside the repository, and writes inside the skill's output folder. It denies everything else, including network and MCP tools, other skills, and running the change's code or tests. Run `/clear` before other work in the same session. Claude Code asks you before either of the skill's two commits; in dontAsk or bypassPermissions mode, where no one would see that question, the commits are refused. Every tool call of the run is logged in the output folder. Outside a run the hook does nothing.
+
+Start a review in a checkout you trust, such as a worktree of the base branch, not the pull request's branch. Claude Code reads a checkout's `.claude/settings.json` (environment, hooks, MCP servers) and `CLAUDE.md` when a session starts, before explain-diff runs, so a change that edits them has already acted on the session; the resolver warns when that is the case. A run refuses to start when the run guard is not active (for example `disableAllHooks`; this catches a switched-off guard, it is not a security boundary), and refuses every call when a maintenance override (`EXPLAIN_DIFF_ANY_OUT`, `EXPLAIN_DIFF_GUARD_CONSENT`) is in the session's environment.
 
 ## Use
 

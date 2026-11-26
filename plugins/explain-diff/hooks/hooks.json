@@ -1,5 +1,5 @@
 {
-  "description": "explain-diff run guard: while an explain-diff run is active in a session, allow only the skill's read-only tool boundary; ask the user before either commit script runs. Inactive otherwise.",
+  "description": "explain-diff run guard: while an explain-diff run is active in a session, allow only the skill's read-only tool boundary, until the user runs /clear or ends the run; ask the user before either commit script runs. Inactive otherwise.",
   "hooks": {
     "PreToolUse": [
       {
@@ -10,6 +10,13 @@
       }
     ],
     "UserPromptSubmit": [
+      {
+        "hooks": [
+          { "type": "command", "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/skills/explain-diff/scripts/run_guard.py\"", "timeout": 20 }
+        ]
+      }
+    ],
+    "SessionStart": [
       {
         "hooks": [
           { "type": "command", "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/skills/explain-diff/scripts/run_guard.py\"", "timeout": 20 }

@@ -23,7 +23,9 @@ import os
 import re
 import stat
 import subprocess
+import sys
 import tempfile
+import time
 
 __version__ = "1.5.0"
 OVERRIDE = "EXPLAIN_DIFF_ANY_OUT"
@@ -54,11 +56,24 @@ def temp_bases():
     uid = _uid()
     bases = [tempfile.gettempdir(), os.environ.get("TMPDIR") or "", "/tmp", "/private/tmp", "/var/tmp",
              f"/tmp/claude-{uid}", f"/private/tmp/claude-{uid}", "/tmp/claude"]
-    try:
-        bases.append(os.confstr("CS_DARWIN_USER_TEMP_DIR"))  # macOS per-user temp, whatever TMPDIR says
-    except (AttributeError, ValueError, OSError):
-        pass
+    bases.append(_darwin_user_temp())  # macOS per-user temp, whatever TMPDIR says
     return [b for b in bases if b]
+
+
+def _darwin_user_temp():
+    """macOS's per-user temp folder (/var/folders/.../T/), where an unsandboxed hook writes when TMPDIR is unset.
+    Python has no name for _CS_DARWIN_USER_TEMP_DIR, so ask by number (65537), then getconf."""
+    if sys.platform != "darwin":
+        return ""
+    try:
+        return os.confstr(65537) or ""
+    except (ValueError, OSError):
+        pass
+    try:
+        p = subprocess.run(["/usr/bin/getconf", "DARWIN_USER_TEMP_DIR"], capture_output=True, text=True, timeout=5)
+        return p.stdout.strip() if p.returncode == 0 else ""
+    except (OSError, subprocess.SubprocessError):
+        return ""
 
 
 def known_roots():
@@ -147,6 +162,41 @@ def load_run_file(path, name):
             raise SystemExit(f"{path} is not a regular file")
     with open(path, encoding="utf-8") as f:
         return json.load(f)
+
+
+GUARD_TICKET_SECONDS = 600
+
+
+def take_guard_ticket(repo):
+    """True, once, when the run guard just allowed `resolve_target.py --work` for this repository: it writes a note
+    (runs/ticket.<session>.json) before the command runs, and this takes it. The window allows for Claude Code's own
+    permission prompt. A session whose guard is not loaded (hooks disabled, for example by a repository's
+    .claude/settings.json disableAllHooks, or the plugin's hooks missing) has no note, so the run does not start.
+    It is a check against a guard that is switched off, not a boundary: a model with no guard could write a note."""
+    now = time.time()
+    want = os.path.realpath(repo)
+    for root in known_roots():
+        folder = os.path.join(root, "runs")
+        try:
+            names = [n for n in os.listdir(folder) if n.startswith("ticket.") and n.endswith(".json")]
+        except OSError:
+            continue
+        for name in names:
+            path = os.path.join(folder, name)
+            try:
+                with open(path, encoding="utf-8") as f:
+                    t = json.load(f)
+            except (OSError, ValueError):
+                continue
+            # A time ahead of now (beyond clock jitter) is not a fresh note, it is a forged or broken file.
+            if (isinstance(t, dict) and isinstance(t.get("ts"), (int, float)) and isinstance(t.get("repo"), str)
+                    and os.path.realpath(t["repo"]) == want and -5 <= now - t["ts"] <= GUARD_TICKET_SECONDS):
+                try:
+                    os.unlink(path)
+                except OSError:
+                    pass  # a sandboxed resolver may not delete in the hook's folder; the time window still applies
+                return True
+    return False
 
 
 def new_work(label):

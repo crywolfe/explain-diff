@@ -310,6 +310,30 @@ def resolve(target, base_override, fetch):
     return out
 
 
+# Files Claude Code reads when a session starts in a checkout: settings (env, hooks, permissions), MCP servers, and
+# instructions. A change that edits them and is checked out has already acted on this session.
+SESSION_FILES = re.compile(r"(^|/)\.claude(/|$)|^\.mcp\.json$|(^|/)claude(\.local)?\.md$", re.I)  # macOS folders ignore case
+
+
+def checked_out_agent_files(res):
+    """A warning when the change edits Claude Code's session files and this checkout has the change's version of
+    them: uncommitted changes, the head itself, or a later commit or edit that kept them. git compares, so line-ending
+    and filter attributes (which the change can set) apply as they do for git status."""
+    files = [f["path"] for f in res.get("files") or [] if SESSION_FILES.search(f["path"])]
+    head = (res.get("head") or {}).get("sha")
+    if not files:
+        return []
+    if res.get("mode") != "working":
+        if not head:
+            return []
+        files = [p for p in files if safety.git("diff", "--quiet", head, "--", p).returncode == 0]
+    if not files:
+        return []
+    return [f"this change edits {', '.join(files[:5])} and is checked out here: Claude Code loaded its settings, hooks, "
+            "MCP servers and instructions when this session started, before explain-diff ran. Review it from a checkout "
+            "of the base branch (a separate worktree), and treat this session as untrusted"]
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     ap.add_argument("target", nargs="?", default="")
@@ -319,10 +343,27 @@ def main():
     ap.add_argument("--work", action="store_true", help="create a fresh private working folder and write target.json in it")
     ap.add_argument("--quiz", help=argparse.SUPPRESS)  # the skill's quiz-length option; accepted here so a leftover one is harmless
     a = ap.parse_args()
+    overrides = [n for n in ("EXPLAIN_DIFF_ANY_OUT", "EXPLAIN_DIFF_GUARD_CONSENT") if n in os.environ]
+    if a.work and overrides:
+        # A checkout's .claude/settings.json env can set these for every command; the guard refuses them too.
+        print(json.dumps({"status": "error", "warnings": [], "summary": (
+            f"{', '.join(overrides)} is set in this session's environment (perhaps by this repository's .claude/settings.json "
+            "env). It switches off explain-diff's protections, so the run stops here. Remove it and start a new session.")}, indent=2))
+        sys.exit(1)
+    if a.work and not safety.take_guard_ticket(git("rev-parse", "--show-toplevel", check=False) or os.getcwd()):
+        # A run starts here. Without the run guard the model's tools are not limited, so the skill does not start.
+        res = {"status": "error", "warnings": [], "summary": (
+            "The explain-diff run guard is not active in this session, so the run stops here. Its hooks may be off "
+            "(disableAllHooks, perhaps in this repository's .claude/settings.json) or the plugin's hooks are not loaded. "
+            "Start Claude Code in a checkout you trust, with the explain-diff plugin enabled, and run the skill again.")}
+        print(json.dumps(res, indent=2))
+        sys.exit(1)
     try:
         res = resolve(a.target, a.base, not a.no_fetch)
     except Exception as e:
         res = {"status": "error", "summary": str(e), "warnings": []}
+    if res.get("status") == "ok":
+        res["warnings"] = res.get("warnings", []) + checked_out_agent_files(res)
     if res.get("status") == "ok":
         try:  # the other scripts refuse a target that fails this check, so never write one
             safety.check_target(res)

@@ -4,9 +4,11 @@ Dated results of runs of the suite described in [README.md](README.md), newest f
 
 ## Pending (1.5.0, security hardening)
 
-No model eval run covers 1.5.0 yet. Before tagging it: run all 24 cases on Opus, Sonnet and Haiku
-(`python3 evals/model/run.py --model opus,sonnet,haiku --all --parallel 4`, about $30 to $60), record the counts
-against the 22/24 and 19/24 bars here, and grade the sample in [GRADING.md](GRADING.md). This is the first run with
+No model eval run covers 1.5.0 yet. Before tagging it: run all 26 cases on Opus, Sonnet and Haiku
+(`python3 evals/model/run.py --model opus,sonnet,haiku --all --parallel 4`, about $35 to $70), record the counts
+against the 24/26 and 21/26 bars here under a heading `## Run record (model evals, 1.5.0, <date>)` with one table row
+per model ending in `Meets` or `Misses`, and grade the sample in [GRADING.md](GRADING.md). `evals/meta_test.py`
+fails when the CHANGELOG marks 1.5.0 released without that record. This is the first run with
 the run guard loaded and credentials scrubbed, so read the `permission_denials` in each record: a denial on a call
 the skill needs is a guard bug, not a model miss. Offline suites all pass as of 2026-11-23.
 

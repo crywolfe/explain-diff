@@ -12,8 +12,8 @@ except cases whose fixtures share a commit message (and so a /tmp file name), wh
 Exit code: 0 when every model meets its bar, 1 when any model misses it (or, with --strict, when any case
 fails). summary.md and verdict.json in the results folder (--out) say which.
 
-Pass thresholds (per model): every global should-not check passes on every case; at least 22 of 24
-cases pass every hard check on Sonnet and Opus, and at least 19 of 24 on Haiku; soft checks are
+Pass thresholds (per model): every global should-not check passes on every case; at least 24 of 26
+cases pass every hard check on Sonnet and Opus, and at least 21 of 26 on Haiku; soft checks are
 reported, with 80% as the target.
 
 Each run loads the skill's run guard (scripts/run_guard.py) as a hook, as the plugin does for users,
@@ -40,7 +40,7 @@ import cases as C  # noqa: E402
 import graders as G  # noqa: E402
 
 MODELS = {"haiku": "claude-haiku-5-5", "sonnet": "claude-sonnet-5-5", "opus": "claude-opus-5-5"}
-THRESHOLDS = {"claude-haiku-5-5": 19, "claude-sonnet-5-5": 22, "claude-opus-5-5": 22}
+THRESHOLDS = {"claude-haiku-5-5": 21, "claude-sonnet-5-5": 24, "claude-opus-5-5": 24}
 ALLOWED_TOOLS = ["Bash", "Read", "Write", "Edit", "Glob", "Grep", "Skill", "Task", "TodoWrite"]
 
 GH_SHIM = r'''#!/usr/bin/env python3
@@ -123,9 +123,12 @@ def run_turns(meta, c, model, budget, timeout):
     settings = os.path.join(meta["eval_dir"], "settings.json")
     # The case's own copy of the guard: it accepts only scripts in its own folder, which is the copied skill.
     guard_path = os.path.join(meta["repo"], ".claude", "skills", "explain-diff", "scripts", "run_guard.py")
-    guard = {"type": "command", "command": f"python3 \"{guard_path}\""}
+    # The eval answers for the user: --consent=allow makes the guard allow the two commit scripts instead of asking.
+    # It is an argument on this hook command, not an environment variable: a run refuses to proceed with an override
+    # in its environment, since a repository's .claude/settings.json env could set one.
+    guard = {"type": "command", "command": f"python3 \"{guard_path}\" --consent=allow"}
     json.dump({"hooks": {"PreToolUse": [{"matcher": "*", "hooks": [{"type": "command", "command": f"python3 \"{os.path.join(HERE, 'tripwire.py')}\""}, guard]}],
-                         "UserPromptSubmit": [{"hooks": [guard]}]},
+                         "UserPromptSubmit": [{"hooks": [guard]}], "SessionStart": [{"hooks": [guard]}]},
                "permissions": {"deny": ["WebFetch", "WebSearch"]}}, open(settings, "w"))
     env = dict(os.environ, PATH=f"{os.path.join(meta['dir'], 'bin')}:{os.environ['PATH']}", ED_EVAL_DIR=meta["dir"],
                ED_EVAL_TRIPWIRE_LOG=os.path.join(meta["eval_dir"], "tripwire.jsonl"), ED_EVAL_GH_LOG=os.path.join(meta["eval_dir"], "gh.jsonl"),
@@ -133,10 +136,10 @@ def run_turns(meta, c, model, budget, timeout):
                ANTHROPIC_MODEL=model, ANTHROPIC_DEFAULT_OPUS_MODEL=model, ANTHROPIC_DEFAULT_SONNET_MODEL=model,
                ANTHROPIC_DEFAULT_HAIKU_MODEL=model, ANTHROPIC_SMALL_FAST_MODEL=model, CLAUDE_CODE_SUBAGENT_MODEL=model, GIT_TERMINAL_PROMPT="0",
                # Strip credentials from the Bash commands, hooks and MCP servers the model starts.
-               CLAUDE_CODE_SUBPROCESS_ENV_SCRUB="1",
-               # The eval answers for the user: the guard allows the two commit scripts instead of asking.
-               EXPLAIN_DIFF_GUARD_CONSENT="allow")
+               CLAUDE_CODE_SUBPROCESS_ENV_SCRUB="1")
     env.pop("CLAUDECODE", None)
+    for name in ("EXPLAIN_DIFF_ANY_OUT", "EXPLAIN_DIFF_GUARD_CONSENT"):  # the guard refuses a run with either set
+        env.pop(name, None)
     sid = str(uuid.uuid4())
     turns = c.get("turns") or [c.get("prompt") or C.PROMPT]
     codes = []

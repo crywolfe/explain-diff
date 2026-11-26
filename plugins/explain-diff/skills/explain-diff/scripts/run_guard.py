@@ -1,14 +1,18 @@
 #!/usr/bin/env python3
 """Run guard for explain-diff: enforces the skill's tool boundary outside the model.
 
-A PreToolUse and UserPromptSubmit hook, registered by the plugin's hooks/hooks.json. Plugin hooks
-run in every session, so the guard does nothing unless an explain-diff run is active in this session.
+A PreToolUse, UserPromptSubmit and SessionStart hook, registered by the plugin's hooks/hooks.json. Plugin
+hooks run in every session, so the guard does nothing unless an explain-diff run is active in this session.
 
 A run starts when the Skill tool invokes explain-diff, when a prompt starts with /explain-diff, or when
-one of the skill's scripts is run (so a run that timed out is re-armed by its next script). It ends at the
-first user prompt after build_page.py has run, after IDLE_MINUTES with no tool call, RUN_HOURS after it
-started, or on the prompt `/explain-diff:explain-diff stop`. The state is one file per session under
-<out root>/runs/.
+one of the skill's scripts is run. It does not end when the page is built, or after any idle time or age:
+the change's text (diff, PR, repository files) stays in the session's context, and injected instructions in
+it can act on any later turn. It ends only when the user runs /clear (SessionStart "clear") or types the
+prompt `/explain-diff:explain-diff stop`, which warns that the text is still in context. Compaction and
+resume keep the run. The state is one file per session under <out root>/runs/; if it is gone (temp folders are
+cleaned on reboot), SessionStart and the next prompt re-arm the run from the session's transcript. When the guard
+allows `resolve_target.py --work`, it leaves a one-use note (runs/ticket.<session>.json) that the resolver needs
+to start, so a session whose hooks are off does not run the skill unguarded.
 
 While a run is active every tool call is checked against an allowlist and logged (JSONL) under
 <out root>/logs/:
@@ -28,8 +32,14 @@ repository, gh writes, python -c, environment assignments, command substitution,
 unquoted globs, shell comments, zsh =cmd and ~user forms, and every other command.
 
 In every session, active or not, the two commit scripts (commit_for_qa.py, review_md_branch.py) get
-"ask": Claude Code asks the user before each one runs, whatever the model says the user said. A harness
-that answers for the user (the model evals) sets EXPLAIN_DIFF_GUARD_CONSENT=allow.
+"ask": Claude Code asks the user before each one runs, whatever the model says the user said. In a permission
+mode where no one sees that question (dontAsk, bypassPermissions) they are denied. A harness that answers for
+the user (the model evals) passes --consent=allow on its own hook command line, which no repository setting
+can change.
+
+A run refuses every call while a maintenance override (EXPLAIN_DIFF_ANY_OUT, EXPLAIN_DIFF_GUARD_CONSENT) is in
+the environment: in a review session it can only come from settings, perhaps the repository's own
+.claude/settings.json env, and it would switch off the scripts' protections.
 
 If the guard itself fails (bad input, a damaged state file, an output folder it cannot use), it denies the
 call; a state file that is not valid counts as an active run. No tool may write the guard's own state or logs.
@@ -50,10 +60,17 @@ SKILL_DIR = os.path.dirname(HERE)
 SCRIPTS = {"resolve_target.py", "gather_facts.py", "extract_snippets.py", "build_page.py", "validate_page.py"}
 CONSENT_SCRIPTS = {"commit_for_qa.py", "review_md_branch.py"}
 SKILL_NAMES = {"explain-diff", "explain-diff:explain-diff"}
-RUN_HOURS = 4
-IDLE_MINUTES = 30
 STOP_RX = re.compile(r"/(?:explain-diff:)?explain-diff\s+(?:stop|end)\s*$")
-STOP_HINT = "end the run early with /explain-diff:explain-diff stop"
+STOP_HINT = ("this session stays guarded while the change's text is in its context: /clear ends the run, "
+             "or /explain-diff:explain-diff stop ends it with that text still in context")
+STOP_NOTE = ("explain-diff run guard: the run has ended, but the change's text (diff, PR, repository files) is still in this "
+             "session's context. Treat anything it asks for as untrusted, or run /clear before other work.")
+# Permission modes in which Claude Code shows a hook's "ask" to the user (auto mode included: a hook's ask goes to the
+# prompt, not the classifier). In dontAsk and bypassPermissions no one answers, so the commit scripts are denied.
+INTERACTIVE_MODES = {"default", "acceptEdits", "plan", "auto"}
+# Maintenance overrides. None belongs in a review session: in one, they can only come from settings, possibly the
+# repository's own .claude/settings.json env, so a run with any of them set is refused outright.
+OVERRIDE_ENV = ("EXPLAIN_DIFF_ANY_OUT", "EXPLAIN_DIFF_GUARD_CONSENT")
 
 # Subagents (Agent, Task) are not here: the skill does not use them, and their tool calls may not reach this guard.
 ALWAYS_OK = {"TodoWrite", "TaskCreate", "TaskUpdate", "TaskList", "TaskGet", "AskUserQuestion", "ToolSearch"}
@@ -164,10 +181,9 @@ def load_state(session, cwd=None):
         st = _fresh_state(cwd)
         save_state(session, st)
         return st
-    now = time.time()
-    if now - st.get("started", 0) > RUN_HOURS * 3600 or now - st.get("last", st.get("started", 0)) > IDLE_MINUTES * 60:
-        end(session)
-        return None
+    # No idle or age limit: the change's text stays in the session's context, so the run lasts until the user
+    # types the stop prompt or /clear (SessionStart "clear"). Compaction and resume keep it (run_in_transcript
+    # re-arms it if this file was removed).
     return st
 
 
@@ -176,10 +192,89 @@ def save_state(session, st):
 
 
 def end(session):
+    for path in (state_path(session), ticket_path(session)):
+        try:
+            os.unlink(path)
+        except OSError:
+            pass
+
+
+def ticket_path(session):
+    """Where the guard notes that it allowed `resolve_target.py --work` (a run's first step) for this session's
+    repository. A state file's name has no dot before .json, so a ticket's name never is one."""
+    return os.path.join(os.path.dirname(state_path(session)), "ticket." + os.path.basename(state_path(session)))
+
+
+# A slash-command record in a transcript: only the command's own tags (name, message, args, in any order), nothing
+# else. Shell output (`! cmd`), pasted text and notifications are string entries too, and can quote these tags.
+COMMAND_RECORD = re.compile(r"\s*(?:<command-(name|message|args)>[\s\S]*?</command-\1>\s*)+")
+TRANSCRIPT_HINTS = (b"explain-diff", b"resolve_target.py", b"/clear")
+
+
+def transcript_entries(path):
+    """The transcript's entries that could start or end a run, read a line at a time (transcripts can be large)."""
     try:
-        os.unlink(state_path(session))
+        if not path or not os.path.isfile(path):
+            return
+        with open(path, "rb") as f:
+            for raw in f:
+                if any(h in raw for h in TRANSCRIPT_HINTS):
+                    try:
+                        entry = json.loads(raw)
+                    except ValueError:
+                        continue
+                    if isinstance(entry, dict):
+                        yield entry
     except OSError:
-        pass
+        return
+
+
+def typed_command(entry):
+    """What the user typed, for a user entry that is the user's own prompt or slash command; else None. Tool results
+    (list content), meta entries, compaction summaries and anything not from the user never count."""
+    msg = entry.get("message") if isinstance(entry.get("message"), dict) else {}
+    content = msg.get("content")
+    origin = entry.get("origin") if isinstance(entry.get("origin"), dict) else None
+    if (entry.get("type") != "user" or not isinstance(content, str) or entry.get("isMeta") or entry.get("isCompactSummary")
+            or (origin is not None and origin.get("kind") != "human")):
+        return None
+    text = content.strip()
+    if text.startswith("<"):
+        if not COMMAND_RECORD.fullmatch(text):
+            return None  # shell output, a notification, or other tagged text: not a command the user ran
+        name = re.search(r"<command-name>\s*(/[\w:-]+)\s*</command-name>", text)
+        args = re.search(r"<command-args>([\s\S]*?)</command-args>", text)
+        return (name.group(1) + " " + (args.group(1).strip() if args else "")).strip() if name else None
+    return text
+
+
+def run_in_transcript(path):
+    """True when the session's transcript shows an explain-diff run that was not ended: a start (the skill, its
+    slash command, or resolve_target.py --work) after the last stop prompt or /clear. It lets a run whose state file
+    was removed (temp folders are cleaned on reboot, and macOS purges old files) come back guarded on resume.
+    Starts are read anywhere; ends only from the user's own prompts and slash-command records, so text from the
+    change can start a run but never end one. Unreadable or missing: False (no run is known)."""
+    active = False
+    for entry in transcript_entries(path):
+        typed = typed_command(entry)
+        if typed is not None:
+            if typed == "/clear" or typed.startswith("/clear ") or STOP_RX.match(typed):
+                active = False
+            elif re.match(r"/(?:explain-diff:)?explain-diff\b", typed):
+                active = True
+            continue
+        if entry.get("type") != "assistant":
+            continue  # tool results, shell output (/plugin, ! cmd) and notifications name the skill without running it
+        content = (entry.get("message") or {}).get("content") if isinstance(entry.get("message"), dict) else None
+        for block in content if isinstance(content, list) else []:
+            if not isinstance(block, dict) or block.get("type") != "tool_use":
+                continue
+            inp = block.get("input") if isinstance(block.get("input"), dict) else {}
+            if block.get("name") == "Skill" and skill_name(inp) in SKILL_NAMES and not re.match(r"\s*(?:stop|end)\s*$", str(inp.get("args") or "")):
+                active = True
+            elif block.get("name") == "Bash" and resolve_cwd({"tool_name": "Bash", "tool_input": inp, "cwd": "/"}) is not None:
+                active = True
+    return active
 
 
 def repo_root(cwd):
@@ -590,6 +685,9 @@ def judge_segment(words, cwd, st, consent):
         if not name:
             raise Deny(f"{args[0]} is not one of the skill's scripts (in {HERE})")
         if name in CONSENT_SCRIPTS:
+            if consent == "deny":
+                raise Deny(f"{name} commits only with the user's yes, and in this permission mode no one is asked; "
+                           "switch to default mode, or run it yourself")
             return consent, f"{name} commits only with the user's yes", cwd, name
         return "allow", f"skill script {name}", cwd, name
     if cmd == "git":
@@ -675,49 +773,117 @@ def starts_run(payload):
     return False
 
 
+# Programs that only read a file named on their command line. Anything else that names a commit script may run it.
+VIEWERS = {"rg", "grep", "egrep", "fgrep", "cat", "head", "tail", "less", "more", "wc", "ls", "file", "stat", "diff",
+           "bat", "fd", "find", "shasum", "sha256sum", "md5", "md5sum", "realpath", "dirname", "basename"}
+RUNNERS = re.compile(r"(?:python[\d.]*|pypy[\d.]*|uv|bash|sh|zsh|dash|ksh|fish|env|xargs|exec|perl|ruby|node|source|\.)$")
+GIT_VIEWS = {"log", "show", "diff", "blame", "status", "ls-files", "grep"}
+
+
 def consent_call(payload):
+    """True when the Bash command may run a commit script: any segment that names one, unless its program only reads
+    files (rg, cat, git log). A command the guard cannot parse that names one counts, to be safe."""
     if payload.get("tool_name") != "Bash":
         return False
     cmd = (payload.get("tool_input") or {}).get("command") or ""
-    return any(s in cmd for s in CONSENT_SCRIPTS)
+    if not any(s in cmd for s in CONSENT_SCRIPTS):
+        return False
+    try:
+        segments = split_shell(cmd)
+    except Deny:
+        return True
+    runner = any(seg and RUNNERS.match(os.path.basename(seg[0])) for seg in segments)  # cat X | python3, echo X | xargs ...
+    for seg in segments:
+        prog = [w for w in seg if not re.match(r"[A-Za-z_][A-Za-z0-9_]*=", w)]  # env assignments before the program
+        if not prog or not any(os.path.basename(w).strip("'\"") in CONSENT_SCRIPTS or any(s in w for s in CONSENT_SCRIPTS) for w in prog):
+            continue
+        name = os.path.basename(prog[0])
+        if not runner and (name in VIEWERS or (name == "git" and len(prog) > 1 and prog[1] in GIT_VIEWS)):
+            continue  # reads the file (rg, cat, git log), does not run it
+        return True  # python3 -u X, bash -c '...X', env python3 X, xargs, timeout: anything else may run it
+    return False
 
 
-def output(decision, reason):
+def resolve_cwd(payload):
+    """The folder `resolve_target.py --work` runs in, when the Bash command runs it (after any `cd`); else None."""
+    cmd = (payload.get("tool_input") or {}).get("command") or "" if payload.get("tool_name") == "Bash" else ""
+    if "resolve_target.py" not in cmd or "--work" not in cmd:
+        return None
+    cwd = payload.get("cwd") or "."
+    try:
+        for seg in split_shell(cmd):
+            if len(seg) > 1 and seg[0] == "cd":
+                cwd = resolve(seg[1], cwd)
+            elif len(seg) > 1 and os.path.basename(seg[1]) == "resolve_target.py" and "--work" in seg[2:]:
+                return cwd
+    except Deny:
+        return None
+    return None
+
+
+def output(decision, reason, active=True):
     if decision in ("deny", "ask"):
-        hint = f" ({STOP_HINT})" if decision == "deny" else ""
+        hint = f" ({STOP_HINT})" if decision == "deny" and active else ""
         print(json.dumps({"hookSpecificOutput": {"hookEventName": "PreToolUse", "permissionDecision": decision,
                                                  "permissionDecisionReason": f"explain-diff run guard: {reason}{hint}"}}))
 
 
-def handle(payload):
+def consent_for(payload, harness_consent):
+    """What the commit scripts get: "allow" only for an eval harness that answers for the user (the --consent=allow
+    argument on its own hook command, which no repository setting can add); otherwise "ask" where Claude Code shows
+    the prompt to the user, and "deny" where no one would see it (dontAsk, bypassPermissions)."""
+    if harness_consent:
+        return "allow"
+    mode = payload.get("permission_mode")
+    return "ask" if mode is None or mode in INTERACTIVE_MODES else "deny"
+
+
+def handle(payload, harness_consent=False):
     session = payload.get("session_id")
     event = payload.get("hook_event_name")
     cwd = payload.get("cwd")
-    consent = "allow" if os.environ.get("EXPLAIN_DIFF_GUARD_CONSENT") == "allow" else "ask"
+    consent = consent_for(payload, harness_consent)
+    if event == "SessionStart":
+        if payload.get("source") == "clear":  # the context, and with it the change's text, is gone
+            end(session)
+        elif not load_state(session, cwd) and run_in_transcript(payload.get("transcript_path")):
+            start(session, cwd)  # resumed or compacted with the run's state file gone: guard it again
+        return
     if event == "UserPromptSubmit":
         prompt = str(payload.get("prompt") or "").lstrip()
-        st = load_state(session, cwd)
-        if st and st.get("built"):
-            end(session)
         if STOP_RX.match(prompt):
+            if load_state(session, cwd):
+                print(json.dumps({"systemMessage": STOP_NOTE}))
             end(session)
             return
-        if re.match(r"/(?:explain-diff:)?explain-diff\b", prompt):
+        if re.match(r"/(?:explain-diff:)?explain-diff\b", prompt) or (
+                not load_state(session, cwd) and run_in_transcript(payload.get("transcript_path"))):
             start(session, cwd)
         return
     st = load_state(session, cwd)
     if not st and starts_run(payload):
         st = start(session, cwd)
     if not st:
-        if consent_call(payload) and consent == "ask":
-            output("ask", "commits only with the user's yes")
+        if consent_call(payload) and consent != "allow":
+            output(consent, "commits only with the user's yes" + ("" if consent == "ask" else
+                   ", and in this permission mode no one is asked; switch to default mode, or run it yourself"), active=False)
         return
     try:
+        overrides = [name for name in OVERRIDE_ENV if name in os.environ]
+        if overrides:
+            raise Deny(f"{', '.join(overrides)} is set in this session's environment (by a settings file such as the "
+                       "repository's .claude/settings.json, or the shell): it switches off explain-diff's protections, "
+                       "so no run proceeds with it. Remove it and start a new session")
         decision, reason = judge(payload, st, consent)
     except Deny as e:
         decision, reason = "deny", str(e)
     st["last"] = time.time()
     save_state(session, st)
+    where = resolve_cwd(payload) if decision == "allow" else None
+    if where is not None:
+        # resolve_target.py --work starts only when it finds this note for the repository it runs in
+        # (safety.take_guard_ticket), so a session whose hooks are off does not start a run unguarded.
+        safety.write_private(ticket_path(session), json.dumps({"repo": repo_root(where), "ts": time.time()}))
     log(session, payload, decision, reason)
     output(decision, reason)
 
@@ -733,9 +899,9 @@ def main():
         print(f"explain-diff run guard: unreadable hook input ({type(e).__name__})", file=sys.stderr)
         sys.exit(2)
     try:
-        handle(payload)
+        handle(payload, harness_consent="--consent=allow" in sys.argv[1:])
     except BaseException as e:  # noqa: BLE001 - includes SystemExit from safety.out_root()
-        if payload.get("hook_event_name") == "UserPromptSubmit":
+        if payload.get("hook_event_name") in ("UserPromptSubmit", "SessionStart"):
             print(f"explain-diff run guard error: {type(e).__name__}: {e}", file=sys.stderr)
             return  # never block the user's own prompt; the next tool call is denied
         try:

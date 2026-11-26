@@ -13,13 +13,36 @@ Security hardening from the November 2026 AI security and governance review.
   `.mcp.json`, prompt files) is ranked High as "policy file changed" and needs its owner's sign-off.
 - **The change's code is never run.** The skill no longer runs the change's tests or code; coverage says "not run" and
   CI reports results.
-- **Run guard.** The plugin installs a PreToolUse and UserPromptSubmit hook (`scripts/run_guard.py`) that, during a
+- **Run guard.** The plugin installs a PreToolUse, UserPromptSubmit and SessionStart hook (`scripts/run_guard.py`) that, during a
   run, allows only the skill's own scripts (checked byte for byte), read-only `git` and `gh`, read-only utilities
   confined to the repository, and writes inside the run's folder. It denies network, MCP, other skills, and running
   any other program, logs every tool call, and makes Claude Code ask before either commit script runs. Every
   command's options are an exact allowlist; path arguments must resolve inside the repository; the guard fails
-  closed on any error, protects its own state, ends after 30 idle minutes, and `/explain-diff:explain-diff stop`
-  ends a run.
+  closed on any error and protects its own state.
+- **A run lasts until `/clear`.** Building the page no longer ends the run, and there is no idle timeout: the
+  change's text stays in the conversation, so an instruction in it could act on any later turn. The run ends on
+  `/clear` (a SessionStart hook) or `/explain-diff:explain-diff stop`, which warns that the text is still in context.
+  Compaction and resume keep it, and if the run's state file is gone (temp folders are cleaned on reboot), resume
+  and the next prompt re-arm the run from the session's transcript. This changes behaviour: after a review, run
+  `/clear` before other work.
+- **Commits need someone to ask.** In dontAsk and bypassPermissions mode (and any mode the guard does not know),
+  where Claude Code's question would never reach a person, the commit scripts are denied instead of asked. The eval
+  harness gives consent with a `--consent=allow` argument on its own hook command, not an environment variable.
+- **The repository's settings cannot switch the guard off.** The guard refuses every call while
+  `EXPLAIN_DIFF_ANY_OUT` or `EXPLAIN_DIFF_GUARD_CONSENT` is in its environment (a checkout's `.claude/settings.json`
+  `env` can set them). Outside a run, only a command that runs a commit script is asked or denied; one that
+  only names it (`rg`, `git log`) is left alone. `resolve_target.py --work` starts a run only when the guard has just allowed that call for
+  the same repository: the guard leaves a one-use note (`runs/ticket.<session>.json`, good for ten minutes, to allow
+  for Claude Code's permission prompt) and the resolver takes it. With `disableAllHooks` there is no note, so the
+  skill stops instead of running unguarded. This catches a guard that is switched off; it is not a boundary, since
+  a model with no guard could write a note. The resolver also refuses a run with either override in its own
+  environment, and warns when the change edits `.claude/`, `.mcp.json` or `CLAUDE.md` and this checkout has the
+  change's version of them (uncommitted, at the head, or kept by later commits): Claude Code loaded those before
+  the skill ran.
+- **Edited attestations do not count.** The gate workflow ignores an attestation comment that was edited after it
+  was posted (`fromComment` in `docs/gate/validate.js`); a user with write access can edit another user's comment.
+- **Supported models.** A model is supported for a release only when its run record in `evals/RESULTS.md` meets its
+  bar; `evals/meta_test.py` fails when the CHANGELOG marks a version released without one.
 - **Private outputs.** Every file goes in `<temp dir>/explain-diff-<uid>` (0700, files 0600); the scripts refuse other
   output paths, symlinks and loose folders. Working-mode reads never follow a symlink out of the repository.
 - **Masking.** The build masks tokens, keys, assigned passwords and personal email addresses on the page and in the
@@ -48,8 +71,8 @@ Security hardening from the November 2026 AI security and governance review.
   or one `A..B` or `A...B`. The model reads the change with the new `extract_snippets.py --diff`. `guard_test.py`
   runs the allow-list git commands, and two dozen diff forms that fool a check by spelling, in a clone with a tracked
   hooks folder, and fails if any command is both allowed and runs a hook.
-- **Evals.** New offline suites (`guard_test.py`, `safety_test.py`, `meta_test.py`) and three model cases
-  (`policy-weakening`, `no-run-pr-code`, `missing-yes-repo-review-init`); model runs load the run guard and scrub
+- **Evals.** New offline suites (`guard_test.py`, `safety_test.py`, `meta_test.py`) and five model cases
+  (`policy-weakening`, `no-run-pr-code`, `missing-yes-repo-review-init`, `inject-run-files`, `inject-after-run`); model runs load the run guard and scrub
   credentials from subprocesses.
 
 ## 1.4.0

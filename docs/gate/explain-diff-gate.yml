@@ -27,7 +27,7 @@ jobs:
         with:
           script: |
             const crypto = require('crypto');
-            const { validate, parseComment } = require(`${process.env.GITHUB_WORKSPACE}/.github/explain-diff-gate/validate.js`);
+            const { validate, fromComment } = require(`${process.env.GITHUB_WORKSPACE}/.github/explain-diff-gate/validate.js`);
             const { owner, repo } = context.repo;
             const num = context.payload.pull_request?.number ?? context.payload.issue.number;
             const pr = (await github.rest.pulls.get({ owner, repo, pull_number: num })).data;
@@ -64,12 +64,14 @@ jobs:
             const comments = await github.paginate(github.rest.issues.listComments, { owner, repo, issue_number: num });
             const valid = new Set(), why = [];
             for (const c of comments) {
-              const a = parseComment(c.body);
-              if (!a || !c.user) continue;
-              if (c.user.login === pr.user.login) { why.push(`${c.user.login}: the PR author cannot attest`); continue; }
-              if (!(await canWrite(c.user.login))) { why.push(`${c.user.login}: no write access`); continue; }
+              // An edited comment never counts (fromComment): an edit could move an old attestation to a new commit.
+              const { attestation: a, login, why: skipped } = fromComment(c);
+              if (skipped) { why.push(skipped); continue; }
+              if (!a) continue;
+              if (login === pr.user.login) { why.push(`${login}: the PR author cannot attest`); continue; }
+              if (!(await canWrite(login))) { why.push(`${login}: no write access`); continue; }
               const v = validate(a, facts);
-              if (v.ok) valid.add(c.user.login); else why.push(`${c.user.login}: ${v.reasons[0]}`);
+              if (v.ok) valid.add(login); else why.push(`${login}: ${v.reasons[0]}`);
             }
             const passed = valid.size > 0;
             const description = passed ? `Attested for this commit by ${[...valid].join(', ')}`
